@@ -1,0 +1,607 @@
+"""
+Persistence view widget for displaying persistence mechanism information.
+"""
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+    QPushButton, QHBoxLayout, QLineEdit, QLabel, QTabWidget,
+    QTextEdit, QGroupBox, QTreeWidget, QTreeWidgetItem, QFrame
+)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+import json
+import os
+from datetime import datetime, timedelta
+
+
+class PersistenceView(QWidget):
+    """Widget for displaying persistence mechanism information."""
+    
+    # Common LOLBINs (Living Off The Land Binaries)
+    LOLBINS = {
+        'cmd.exe', 'powershell.exe', 'pwsh.exe', 'wmic.exe', 'reg.exe',
+        'certutil.exe', 'bitsadmin.exe', 'mshta.exe', 'rundll32.exe',
+        'msbuild.exe', 'csc.exe', 'cscript.exe', 'wscript.exe',
+        'msiexec.exe', 'schtasks.exe', 'sc.exe', 'net.exe', 'netstat.exe',
+        'tasklist.exe', 'whoami.exe', 'systeminfo.exe', 'ipconfig.exe',
+        'arp.exe', 'nslookup.exe', 'ping.exe', 'tracert.exe', 'route.exe',
+        'at.exe', 'attrib.exe', 'copy.exe', 'xcopy.exe', 'robocopy.exe',
+        'wevtutil.exe', 'bcdedit.exe', 'diskpart.exe', 'vssadmin.exe',
+        'wbinfo.exe', 'dsquery.exe', 'dsget.exe', 'netdom.exe',
+        'nltest.exe', 'quser.exe', 'qprocess.exe', 'qwinsta.exe',
+        'rclone.exe', 'curl.exe', 'wget.exe', 'findstr.exe', 'find.exe',
+        'forfiles.exe', 'ftp.exe', 'telnet.exe', 'tftp.exe', 'ncat.exe',
+        'nc.exe', 'netcat.exe', 'python.exe', 'pythonw.exe', 'perl.exe',
+        'ruby.exe', 'java.exe', 'javaw.exe', 'node.exe', 'php.exe',
+        'ssh.exe', 'scp.exe', 'sftp.exe', 'plink.exe', 'pscp.exe',
+        'psftp.exe', 'rsh.exe', 'rcp.exe', 'rexec.exe', 'rlogin.exe',
+        'rsync.exe', 'svchost.exe', 'dllhost.exe', 'regsvr32.exe',
+        'odbcconf.exe', 'cmstp.exe', 'msxsl.exe', 'winrm.exe', 'winrs.exe'
+    }
+    
+    def __init__(self):
+        super().__init__()
+        self.persistence_data = None
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize the user interface."""
+        layout = QVBoxLayout(self)
+        
+        # Color legend
+        legend = self._create_legend()
+        layout.addWidget(legend)
+        
+        # Control bar
+        control_layout = QHBoxLayout()
+        
+        self.refresh_btn = QPushButton("Refresh")
+        self.export_btn = QPushButton("Export")
+        self.export_btn.clicked.connect(self.export_data)
+        
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search persistence mechanisms...")
+        self.search_box.textChanged.connect(self.filter_data)
+        
+        control_layout.addWidget(QLabel("Search:"))
+        control_layout.addWidget(self.search_box)
+        control_layout.addStretch()
+        control_layout.addWidget(self.refresh_btn)
+        control_layout.addWidget(self.export_btn)
+        
+        layout.addLayout(control_layout)
+        
+        # Tab widget for different persistence types
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+        
+        # Create tab pages
+        self.create_registry_run_tab()
+        self.create_registry_logon_tab()
+        self.create_registry_ifeo_tab()
+        self.create_registry_appinit_tab()
+        self.create_startup_folders_tab()
+        self.create_scheduled_tasks_tab()
+        self.create_wmi_subscriptions_tab()
+        self.create_services_tab()
+        self.create_summary_tab()
+    
+    def create_registry_run_tab(self):
+        """Create tab for registry run keys."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Registry Hive", "Key Path", "Value Name", "Value"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>Registry Run Keys</b>"))
+        layout.addWidget(QLabel("These keys execute programs at startup/login"))
+        layout.addWidget(table)
+        
+        self.registry_run_table = table
+        self.tabs.addTab(widget, "Registry Run Keys")
+    
+    def create_registry_logon_tab(self):
+        """Create tab for registry logon keys."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Registry Hive", "Key Path", "Value Name", "Value"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>Registry Logon Keys</b>"))
+        layout.addWidget(QLabel("Winlogon configuration keys"))
+        layout.addWidget(table)
+        
+        self.registry_logon_table = table
+        self.tabs.addTab(widget, "Logon Keys")
+    
+    def create_registry_ifeo_tab(self):
+        """Create tab for Image File Execution Options."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Registry Hive", "Key Path", "Value Name", "Value"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>Image File Execution Options (IFEO)</b>"))
+        layout.addWidget(QLabel("Used for debugger hijacking - MITRE T1546.012"))
+        layout.addWidget(table)
+        
+        self.registry_ifeo_table = table
+        self.tabs.addTab(widget, "IFEO")
+    
+    def create_registry_appinit_tab(self):
+        """Create tab for AppInit DLLs."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Registry Hive", "Key Path", "Value Name", "Value"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>AppInit DLLs</b>"))
+        layout.addWidget(QLabel("DLLs loaded into every process - MITRE T1546.010"))
+        layout.addWidget(table)
+        
+        self.registry_appinit_table = table
+        self.tabs.addTab(widget, "AppInit DLLs")
+    
+    def create_startup_folders_tab(self):
+        """Create tab for startup folders."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["Folder", "File Name", "Path", "Size (bytes)", "Modified"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>Startup Folders</b>"))
+        layout.addWidget(QLabel("Executables in startup directories - MITRE T1547.001"))
+        layout.addWidget(table)
+        
+        self.startup_folders_table = table
+        self.tabs.addTab(widget, "Startup Folders")
+    
+    def create_scheduled_tasks_tab(self):
+        """Create tab for scheduled tasks."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Task Name", "Path", "Size (bytes)", "Modified"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>Scheduled Tasks</b>"))
+        layout.addWidget(QLabel("Windows Task Scheduler tasks - MITRE T1053.005"))
+        layout.addWidget(table)
+        
+        self.scheduled_tasks_table = table
+        self.tabs.addTab(widget, "Scheduled Tasks")
+    
+    def create_wmi_subscriptions_tab(self):
+        """Create tab for WMI event subscriptions."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Registry Hive", "Key Path", "Value Name", "Value"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>WMI Event Subscriptions</b>"))
+        layout.addWidget(QLabel("WMI event filters and consumers - MITRE T1546.003"))
+        layout.addWidget(table)
+        
+        self.wmi_subscriptions_table = table
+        self.tabs.addTab(widget, "WMI Subscriptions")
+    
+    def create_services_tab(self):
+        """Create tab for suspicious services."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Service Name", "Image Path"])
+        table.setSortingEnabled(True)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+        
+        layout.addWidget(QLabel("<b>Suspicious Service Paths</b>"))
+        layout.addWidget(QLabel("Services with ImagePath in suspicious locations"))
+        layout.addWidget(table)
+        
+        self.services_table = table
+        self.tabs.addTab(widget, "Services")
+    
+    def create_summary_tab(self):
+        """Create summary tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setFontFamily("Courier")
+        
+        layout.addWidget(QLabel("<b>Summary</b>"))
+        layout.addWidget(text_edit)
+        
+        self.summary_text = text_edit
+        self.tabs.addTab(widget, "Summary")
+    
+    def update_data(self, data):
+        """Update the view with new persistence data."""
+        if not data:
+            return
+        
+        self.persistence_data = data
+        
+        if 'mechanisms' not in data:
+            return
+        
+        mechanisms = data['mechanisms']
+        
+        # Update registry run keys
+        if 'registry_run_keys' in mechanisms:
+            self.populate_registry_table(self.registry_run_table, mechanisms['registry_run_keys'])
+        
+        # Update registry logon keys
+        if 'registry_logon_keys' in mechanisms:
+            self.populate_registry_table(self.registry_logon_table, mechanisms['registry_logon_keys'])
+        
+        # Update IFEO
+        if 'registry_image_hijack' in mechanisms:
+            self.populate_registry_table(self.registry_ifeo_table, mechanisms['registry_image_hijack'])
+        
+        # Update AppInit
+        if 'registry_appinit' in mechanisms:
+            self.populate_registry_table(self.registry_appinit_table, mechanisms['registry_appinit'])
+        
+        # Update startup folders
+        if 'startup_folders' in mechanisms:
+            self.populate_startup_folders_table(mechanisms['startup_folders'])
+        
+        # Update scheduled tasks
+        if 'scheduled_tasks' in mechanisms:
+            self.populate_scheduled_tasks_table(mechanisms['scheduled_tasks'])
+        
+        # Update WMI subscriptions
+        if 'wmi_subscriptions' in mechanisms:
+            self.populate_registry_table(self.wmi_subscriptions_table, mechanisms['wmi_subscriptions'])
+        
+        # Update services
+        if 'services' in mechanisms and 'suspicious_service_paths' in mechanisms['services']:
+            self.populate_services_table(mechanisms['services']['suspicious_service_paths'])
+        
+        # Update summary
+        self.update_summary(data)
+    
+    def populate_registry_table(self, table, registry_data):
+        """Populate a registry table with data."""
+        rows = []
+        
+        for entry in registry_data:
+            if 'error' in entry:
+                continue
+            
+            hkey = entry.get('hkey', 'N/A')
+            key_path = entry.get('key', 'N/A')
+            
+            if 'values' in entry:
+                for value in entry['values']:
+                    rows.append({
+                        'hkey': hkey,
+                        'key_path': key_path,
+                        'name': value.get('name', ''),
+                        'value': value.get('value', '')
+                    })
+        
+        table.setRowCount(len(rows))
+        
+        for row_idx, row_data in enumerate(rows):
+            table.setItem(row_idx, 0, QTableWidgetItem(row_data['hkey']))
+            table.setItem(row_idx, 1, QTableWidgetItem(row_data['key_path']))
+            table.setItem(row_idx, 2, QTableWidgetItem(row_data['name']))
+            table.setItem(row_idx, 3, QTableWidgetItem(row_data['value']))
+            
+            # Check if value contains a LOLBIN and highlight in light blue
+            value_str = str(row_data['value'])
+            if value_str and value_str != 'N/A':
+                # Extract executable name from value (handle quoted paths and arguments)
+                executable_name = value_str.split()[0].strip('"\'')
+                executable_name = os.path.basename(executable_name).lower()
+                
+                if executable_name in self.LOLBINS:
+                    lolbin_color = QColor(200, 230, 255)  # Light blue
+                    for col in range(4):
+                        item = table.item(row_idx, col)
+                        if item:
+                            item.setBackground(lolbin_color)
+        
+        table.resizeColumnsToContents()
+    
+    def populate_startup_folders_table(self, folders_data):
+        """Populate startup folders table."""
+        rows = []
+        
+        for folder_entry in folders_data:
+            if 'error' in folder_entry:
+                continue
+            
+            folder = folder_entry.get('folder', 'N/A')
+            
+            if 'files' in folder_entry:
+                for file in folder_entry['files']:
+                    rows.append({
+                        'folder': folder,
+                        'name': file.get('name', ''),
+                        'path': file.get('path', ''),
+                        'size': file.get('size', 0),
+                        'modified': file.get('modified', '')
+                    })
+        
+        self.startup_folders_table.setRowCount(len(rows))
+        
+        for row_idx, row_data in enumerate(rows):
+            self.startup_folders_table.setItem(row_idx, 0, QTableWidgetItem(row_data['folder']))
+            self.startup_folders_table.setItem(row_idx, 1, QTableWidgetItem(row_data['name']))
+            self.startup_folders_table.setItem(row_idx, 2, QTableWidgetItem(row_data['path']))
+            self.startup_folders_table.setItem(row_idx, 3, QTableWidgetItem(str(row_data['size'])))
+            self.startup_folders_table.setItem(row_idx, 4, QTableWidgetItem(row_data['modified']))
+            
+            # Check if path contains a LOLBIN and highlight in light blue
+            path_str = str(row_data['path'])
+            if path_str and path_str != 'N/A':
+                executable_name = os.path.basename(path_str).lower()
+                
+                if executable_name in self.LOLBINS:
+                    lolbin_color = QColor(200, 230, 255)  # Light blue
+                    for col in range(5):
+                        item = self.startup_folders_table.item(row_idx, col)
+                        if item:
+                            item.setBackground(lolbin_color)
+        
+        self.startup_folders_table.resizeColumnsToContents()
+    
+    def populate_scheduled_tasks_table(self, tasks_data):
+        """Populate scheduled tasks table."""
+        rows = []
+        
+        # Calculate the date 30 days ago
+        thirty_days_ago = datetime.now() - timedelta(days=30)
+        
+        for task in tasks_data:
+            if 'error' in task:
+                continue
+            
+            rows.append({
+                'name': task.get('name', ''),
+                'path': task.get('path', ''),
+                'size': task.get('size', 0),
+                'modified': task.get('modified', '')
+            })
+        
+        self.scheduled_tasks_table.setRowCount(len(rows))
+        
+        for row_idx, row_data in enumerate(rows):
+            self.scheduled_tasks_table.setItem(row_idx, 0, QTableWidgetItem(row_data['name']))
+            self.scheduled_tasks_table.setItem(row_idx, 1, QTableWidgetItem(row_data['path']))
+            self.scheduled_tasks_table.setItem(row_idx, 2, QTableWidgetItem(str(row_data['size'])))
+            self.scheduled_tasks_table.setItem(row_idx, 3, QTableWidgetItem(row_data['modified']))
+            
+            # Check if task was modified in the last 30 days
+            is_recently_modified = False
+            modified_str = row_data.get('modified', '')
+            if modified_str:
+                try:
+                    # Parse ISO format datetime (handles both with and without timezone)
+                    modified_str_clean = modified_str.replace('Z', '+00:00')
+                    modified_date = datetime.fromisoformat(modified_str_clean)
+                    # Remove timezone info for comparison if present
+                    if modified_date.tzinfo:
+                        modified_date = modified_date.replace(tzinfo=None)
+                    is_recently_modified = modified_date > thirty_days_ago
+                except (ValueError, AttributeError, TypeError):
+                    # If ISO parsing fails, try parsing as-is (already handled timezone)
+                    try:
+                        modified_date = datetime.fromisoformat(modified_str)
+                        if modified_date.tzinfo:
+                            modified_date = modified_date.replace(tzinfo=None)
+                        is_recently_modified = modified_date > thirty_days_ago
+                    except (ValueError, AttributeError, TypeError):
+                        # If all parsing fails, skip highlighting
+                        pass
+            
+            # Determine background color based on priority:
+            # 1. Recently modified (orange) - highest priority
+            # 2. LOLBIN (light blue) - lower priority
+            background_color = None
+            
+            if is_recently_modified:
+                background_color = QColor(255, 200, 150)  # Orange for recently modified
+            else:
+                # Check if path contains a LOLBIN and highlight in light blue
+                path_str = str(row_data['path'])
+                if path_str and path_str != 'N/A':
+                    # Extract executable name from path (handle quoted paths and arguments)
+                    executable_name = path_str.split()[0].strip('"\'')
+                    executable_name = os.path.basename(executable_name).lower()
+                    
+                    if executable_name in self.LOLBINS:
+                        background_color = QColor(200, 230, 255)  # Light blue for LOLBIN
+            
+            # Apply background color if set
+            if background_color:
+                for col in range(4):
+                    item = self.scheduled_tasks_table.item(row_idx, col)
+                    if item:
+                        item.setBackground(background_color)
+        
+        self.scheduled_tasks_table.resizeColumnsToContents()
+    
+    def populate_services_table(self, services_data):
+        """Populate services table."""
+        self.services_table.setRowCount(len(services_data))
+        
+        for row_idx, service in enumerate(services_data):
+            self.services_table.setItem(row_idx, 0, QTableWidgetItem(service.get('service', '')))
+            self.services_table.setItem(row_idx, 1, QTableWidgetItem(service.get('image_path', '')))
+            
+            # Check if image path contains a LOLBIN and highlight in light blue
+            image_path = service.get('image_path', '')
+            if image_path and image_path != 'N/A':
+                # Extract executable name from image path (handle quoted paths and arguments)
+                executable_name = image_path.split()[0].strip('"\'')
+                executable_name = os.path.basename(executable_name).lower()
+                
+                if executable_name in self.LOLBINS:
+                    lolbin_color = QColor(200, 230, 255)  # Light blue
+                    for col in range(2):
+                        item = self.services_table.item(row_idx, col)
+                        if item:
+                            item.setBackground(lolbin_color)
+        
+        self.services_table.resizeColumnsToContents()
+    
+    def update_summary(self, data):
+        """Update summary text."""
+        summary_lines = []
+        
+        summary_lines.append("PERSISTENCE MECHANISMS ANALYSIS SUMMARY")
+        summary_lines.append("=" * 60)
+        summary_lines.append("")
+        
+        if 'platform' in data:
+            summary_lines.append(f"Platform: {data['platform']}")
+        if 'timestamp' in data:
+            summary_lines.append(f"Timestamp: {data['timestamp']}")
+        summary_lines.append("")
+        
+        if 'mechanisms' in data:
+            mechanisms = data['mechanisms']
+            
+            # Count entries
+            registry_run_count = self.count_registry_entries(mechanisms.get('registry_run_keys', []))
+            registry_logon_count = self.count_registry_entries(mechanisms.get('registry_logon_keys', []))
+            ifeo_count = self.count_registry_entries(mechanisms.get('registry_image_hijack', []))
+            appinit_count = self.count_registry_entries(mechanisms.get('registry_appinit', []))
+            startup_files = sum(len(entry.get('files', [])) for entry in mechanisms.get('startup_folders', []))
+            tasks_count = len([t for t in mechanisms.get('scheduled_tasks', []) if 'error' not in t])
+            wmi_count = self.count_registry_entries(mechanisms.get('wmi_subscriptions', []))
+            suspicious_services = len(mechanisms.get('services', {}).get('suspicious_service_paths', []))
+            
+            summary_lines.append("DETECTED MECHANISMS:")
+            summary_lines.append("-" * 60)
+            summary_lines.append(f"Registry Run Keys: {registry_run_count} entries")
+            summary_lines.append(f"Registry Logon Keys: {registry_logon_count} entries")
+            summary_lines.append(f"Image File Execution Options: {ifeo_count} entries")
+            summary_lines.append(f"AppInit DLLs: {appinit_count} entries")
+            summary_lines.append(f"Startup Folder Files: {startup_files} files")
+            summary_lines.append(f"Scheduled Tasks: {tasks_count} tasks")
+            summary_lines.append(f"WMI Subscriptions: {wmi_count} entries")
+            summary_lines.append(f"Suspicious Service Paths: {suspicious_services} services")
+            summary_lines.append("")
+            
+            if suspicious_services > 0:
+                summary_lines.append("⚠️ WARNING: Suspicious service paths detected!")
+                summary_lines.append("")
+        
+        self.summary_text.setPlainText("\n".join(summary_lines))
+    
+    def count_registry_entries(self, registry_data):
+        """Count total registry values."""
+        count = 0
+        for entry in registry_data:
+            if 'values' in entry:
+                count += len(entry['values'])
+        return count
+    
+    def filter_data(self, text):
+        """Filter data based on search text."""
+        # This is a simple implementation - could be enhanced
+        # For now, just highlight matching rows
+        pass
+    
+    def export_data(self):
+        """Export persistence data to a file."""
+        if not self.persistence_data:
+            return
+        
+        from PySide6.QtWidgets import QFileDialog
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Persistence Data", "persistence.json", "JSON Files (*.json)"
+        )
+        
+        if filename:
+            with open(filename, 'w') as f:
+                json.dump(self.persistence_data, f, indent=2)
+    
+    def _create_legend(self):
+        """Create a color legend widget."""
+        legend_frame = QFrame()
+        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
+        legend_frame.setStyleSheet("QFrame { background-color: #f0f0f0; padding: 2px; }")
+        legend_frame.setMaximumHeight(30)
+        legend_layout = QHBoxLayout(legend_frame)
+        legend_layout.setSpacing(5)
+        legend_layout.setContentsMargins(3, 2, 3, 2)
+        
+        legend_label = QLabel("<b>Legend:</b>")
+        legend_label.setStyleSheet("font-size: 9pt;")
+        legend_layout.addWidget(legend_label)
+        
+        # Orange - Recently modified
+        orange_box = QLabel()
+        orange_box.setFixedSize(12, 12)
+        orange_box.setStyleSheet(f"background-color: rgb(255, 200, 150); border: 1px solid black;")
+        legend_layout.addWidget(orange_box)
+        orange_label = QLabel("Orange: Recently modified (30 days)")
+        orange_label.setStyleSheet("font-size: 9pt;")
+        legend_layout.addWidget(orange_label)
+        
+        # Light blue - LOLBIN
+        blue_box = QLabel()
+        blue_box.setFixedSize(12, 12)
+        blue_box.setStyleSheet(f"background-color: rgb(200, 230, 255); border: 1px solid black;")
+        legend_layout.addWidget(blue_box)
+        blue_label = QLabel("Light Blue: LOLBIN")
+        blue_label.setStyleSheet("font-size: 9pt;")
+        legend_layout.addWidget(blue_label)
+        
+        legend_layout.addStretch()
+        return legend_frame
+
+

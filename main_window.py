@@ -1,0 +1,505 @@
+"""
+Main window for the Host Triage Analysis Tool.
+"""
+
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QTabWidget, QPushButton,
+    QHBoxLayout, QStatusBar, QMessageBox, QProgressBar
+)
+from PySide6.QtCore import Qt, QThread, Signal, QMutex, QMutexLocker, QTimer
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
+from collectors.process_collector import ProcessCollector
+from collectors.network_collector import NetworkCollector
+from collectors.service_collector import ServiceCollector
+from collectors.file_collector import FileCollector
+from collectors.system_collector import SystemCollector
+from collectors.persistence_collector import PersistenceCollector
+from collectors.dll_collector import DLLCollector
+from collectors.login_collector import LoginCollector
+from collectors.app_collector import AppCollector
+from collectors.firewall_collector import FirewallCollector
+from ui.process_view import ProcessView
+from ui.network_view import NetworkView
+from ui.service_view import ServiceView
+from ui.file_view import FileView
+from ui.system_view import SystemView
+from ui.persistence_view import PersistenceView
+from ui.dll_view import DLLView
+from ui.login_view import LoginView
+from ui.app_view import AppView
+from ui.firewall_view import FirewallView
+
+
+class CollectionThread(QThread):
+    """Thread for collecting data without blocking the UI."""
+    finished = Signal(object, str)  # data, collector_name
+    error = Signal(str, str)  # error_message, collector_name
+    incremental_update = Signal(object, str)  # incremental_data, collector_name
+    
+    def __init__(self, collector, collector_name):
+        super().__init__()
+        self.collector = collector
+        self.collector_name = collector_name
+    
+    def run(self):
+        try:
+            # For DLL collector, set up incremental callback
+            if self.collector_name == "dlls" and hasattr(self.collector, 'incremental_callback'):
+                # Create a callback that emits incremental updates
+                def incremental_callback(dll_info):
+                    self.incremental_update.emit(dll_info, self.collector_name)
+                self.collector.incremental_callback = incremental_callback
+            
+            import sys
+            print(f"[CollectionThread] {self.collector_name} thread starting collection...", file=sys.stderr)
+            data = self.collector.collect()
+            print(f"[CollectionThread] {self.collector_name} collection completed: data type={type(data)}", file=sys.stderr)
+            
+            # Ensure data is not None and is a dictionary
+            if data is None:
+                print(f"[CollectionThread] {self.collector_name} WARNING: collector returned None!", file=sys.stderr)
+                data = {}
+            
+            # Check if collector returned an error (some collectors return error in dict)
+            if isinstance(data, dict) and 'error' in data:
+                # Still emit finished but with error info
+                # The view should handle this gracefully
+                pass
+            
+            # Ensure data has required structure for each collector
+            if self.collector_name == "logins":
+                if not isinstance(data, dict):
+                    data = {}
+                if 'logins' not in data:
+                    data['logins'] = []
+                if 'users' not in data:
+                    data['users'] = []
+            
+            self.finished.emit(data, self.collector_name)
+        except Exception as e:
+            # Log the error for debugging
+            import traceback
+            error_details = f"{str(e)}\n{traceback.format_exc()}"
+            self.error.emit(error_details, self.collector_name)
+
+
+class MainWindow(QMainWindow):
+    """Main window of the triage analysis application."""
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Host Triage Analysis Tool")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        # Initialize collectors
+        self.collectors = {
+            "processes": ProcessCollector(),
+            "network": NetworkCollector(),
+            "services": ServiceCollector(),
+            "files": FileCollector(),
+            "system": SystemCollector(),
+            "persistence": PersistenceCollector(),
+            "dlls": DLLCollector(),
+            "logins": LoginCollector(),
+            "applications": AppCollector(),
+            "firewall": FirewallCollector()
+        }
+        
+        # Collection threads
+        self.collection_threads = {}
+        
+        # Thread-safe progress tracking
+        self.progress_mutex = QMutex()
+        self.completed_count = 0
+        self.total_collectors = len(self.collectors)
+        
+        # Store collected data for correlation
+        self.collected_data = {}
+        
+        # Mapping from collector names to tab indices
+        self.collector_to_tab = {
+            "processes": 0,
+            "network": 1,
+            "services": 2,
+            "files": 3,
+            "system": 4,
+            "persistence": 5,
+            "dlls": 6,
+            "logins": 7,
+            "applications": 8,
+            "firewall": 9
+        }
+        
+        # Create green icon for completed tabs
+        self.green_icon = self.create_green_icon()
+        
+        # Create red icons for blinking (bright and dark)
+        self.red_icon_bright = self.create_red_icon(True)
+        self.red_icon_dark = self.create_red_icon(False)
+        
+        # Blinking timer for red icons on tabs
+        self.blink_timer = QTimer()
+        self.blink_timer.timeout.connect(self.blink_red_tabs)
+        self.is_red_bright = True
+        
+        # Track which tabs are still processing
+        self.processing_tabs = set()
+        
+        self.init_ui()
+    
+    def _cleanup_existing_threads(self):
+        """Clean up any existing running threads before starting new collection."""
+        for name, thread in list(self.collection_threads.items()):
+            if thread.isRunning():
+                # Wait for thread to finish (with timeout)
+                if not thread.wait(1000):  # Wait up to 1 second
+                    # If thread is still running, terminate it
+                    thread.terminate()
+                    thread.wait(500)  # Wait for termination
+                # Disconnect signals to prevent memory leaks
+                try:
+                    thread.finished.disconnect()
+                    thread.error.disconnect()
+                    if hasattr(thread, 'incremental_update'):
+                        thread.incremental_update.disconnect()
+                except:
+                    pass
+        self.collection_threads.clear()
+    
+    def _create_collector_instance(self, name, template_collector):
+        """Create a new collector instance for a thread to ensure independence.
+        
+        Args:
+            name: Collector name (e.g., 'processes', 'logins')
+            template_collector: The original collector instance to use as template
+            
+        Returns:
+            New collector instance (or template if copying is not needed)
+        """
+        # For thread safety, create a new instance of each collector
+        # This ensures each thread has completely independent state
+        if name == "processes":
+            return ProcessCollector()
+        elif name == "network":
+            return NetworkCollector()
+        elif name == "services":
+            return ServiceCollector()
+        elif name == "files":
+            return FileCollector()
+        elif name == "system":
+            return SystemCollector()
+        elif name == "persistence":
+            return PersistenceCollector()
+        elif name == "dlls":
+            return DLLCollector()
+        elif name == "logins":
+            return LoginCollector()
+        elif name == "applications":
+            return AppCollector()
+        elif name == "firewall":
+            return FirewallCollector()
+        else:
+            # Fallback: return template (shouldn't happen)
+            return template_collector
+    
+    def _cleanup_finished_threads(self):
+        """Clean up threads that have finished executing."""
+        for name, thread in list(self.collection_threads.items()):
+            if not thread.isRunning():
+                # Thread has finished, disconnect signals to prevent memory leaks
+                try:
+                    thread.finished.disconnect()
+                    thread.error.disconnect()
+                    if hasattr(thread, 'incremental_update'):
+                        thread.incremental_update.disconnect()
+                except:
+                    pass
+                # Thread will be cleaned up by Python's garbage collector
+                # but we remove it from our tracking dict
+                del self.collection_threads[name]
+    
+    def init_ui(self):
+        """Initialize the user interface."""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        layout = QVBoxLayout(central_widget)
+        
+        # Control buttons
+        button_layout = QHBoxLayout()
+        self.collect_all_btn = QPushButton("Collect All Data")
+        self.collect_all_btn.clicked.connect(self.collect_all_data)
+        button_layout.addWidget(self.collect_all_btn)
+        
+        # Progress bar (beside the button)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        button_layout.addWidget(self.progress_bar)
+        
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # Tab widget for different views
+        self.tabs = QTabWidget()
+        
+        # Create views
+        self.process_view = ProcessView()
+        self.network_view = NetworkView()
+        self.service_view = ServiceView()
+        self.file_view = FileView()
+        self.system_view = SystemView()
+        self.persistence_view = PersistenceView()
+        self.dll_view = DLLView()
+        self.login_view = LoginView()
+        self.app_view = AppView()
+        self.firewall_view = FirewallView()
+        
+        # Add tabs
+        self.tabs.addTab(self.process_view, "Processes")
+        self.tabs.addTab(self.network_view, "Network")
+        self.tabs.addTab(self.service_view, "Services")
+        self.tabs.addTab(self.file_view, "Files")
+        self.tabs.addTab(self.system_view, "System Info")
+        self.tabs.addTab(self.persistence_view, "Persistence")
+        self.tabs.addTab(self.dll_view, "DLLs")
+        self.tabs.addTab(self.login_view, "Logins")
+        self.tabs.addTab(self.app_view, "Applications")
+        self.tabs.addTab(self.firewall_view, "Firewall")
+        
+        layout.addWidget(self.tabs)
+        
+        # Status bar
+        self.statusBar = QStatusBar()
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("Ready")
+    
+    def create_green_icon(self):
+        """Create a small green circle icon for tab headers."""
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(0, 200, 0))  # Green color
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, 12, 12)  # Draw a small circle
+        painter.end()
+        return QIcon(pixmap)
+    
+    def create_red_icon(self, bright=True):
+        """Create a small red circle icon for tab headers (bright or dark for blinking)."""
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if bright:
+            painter.setBrush(QColor(255, 0, 0))  # Bright red
+        else:
+            painter.setBrush(QColor(128, 0, 0))  # Dark red
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, 12, 12)  # Draw a small circle
+        painter.end()
+        return QIcon(pixmap)
+    
+    def blink_red_tabs(self):
+        """Toggle red icons on tabs that are still processing."""
+        self.is_red_bright = not self.is_red_bright
+        current_icon = self.red_icon_bright if self.is_red_bright else self.red_icon_dark
+        
+        # Update all tabs that are still processing
+        for tab_index in self.processing_tabs:
+            self.tabs.setTabIcon(tab_index, current_icon)
+    
+    def collect_all_data(self):
+        """Collect data from all collectors in parallel using multiple threads."""
+        # Prevent multiple simultaneous collection runs
+        if self.collect_all_btn.isEnabled() == False:
+            # Check if threads are still running
+            running_threads = [t for t in self.collection_threads.values() if t.isRunning()]
+            if running_threads:
+                return  # Collection already in progress
+        
+        self.collect_all_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, self.total_collectors)
+        self.progress_bar.setValue(0)
+        self.statusBar.showMessage("Collecting data from all collectors in parallel...")
+        
+        # Wait for any existing threads to finish or terminate them
+        self._cleanup_existing_threads()
+        
+        # Initialize all tabs as processing and set red blinking icons
+        self.processing_tabs = set(range(self.tabs.count()))
+        self.is_red_bright = True
+        for tab_index in self.processing_tabs:
+            self.tabs.setTabIcon(tab_index, self.red_icon_bright)
+        
+        # Start blinking timer
+        self.blink_timer.start(500)  # Blink every 500ms
+        
+        # Reset thread-safe counter
+        with QMutexLocker(self.progress_mutex):
+            self.completed_count = 0
+        
+        # Clear DLL view before starting new collection (for incremental updates)
+        self.dll_view.clear_data()
+        
+        # Clear previous thread references
+        self.collection_threads.clear()
+        
+        # Start all collection threads in parallel - each gets its own collector instance
+        for name, collector_template in self.collectors.items():
+            # Create a new collector instance for each thread to ensure independence
+            # This ensures each thread has its own collector state
+            collector_instance = self._create_collector_instance(name, collector_template)
+            
+            # Create and start thread for this collector
+            thread = CollectionThread(collector_instance, name)
+            thread.finished.connect(self.on_collection_finished)
+            thread.error.connect(self.on_collection_error)
+            # Connect incremental updates for DLL collector
+            if name == "dlls":
+                thread.incremental_update.connect(self.on_dll_incremental_update)
+            self.collection_threads[name] = thread
+            thread.start()  # All threads start immediately and run in parallel
+    
+    def on_collection_finished(self, data, collector_name):
+        """Handle successful data collection (called from worker thread)."""
+        # Thread-safe progress update
+        with QMutexLocker(self.progress_mutex):
+            self.completed_count += 1
+            current_count = self.completed_count
+        
+        # Update progress bar (this is thread-safe, Qt handles cross-thread calls)
+        self.progress_bar.setValue(current_count)
+        
+        # Store collected data
+        self.collected_data[collector_name] = data
+        
+        # Update the appropriate view
+        if collector_name == "processes":
+            self.process_view.update_data(data)
+            # If network data is already collected, pass it for correlation
+            if "network" in self.collected_data:
+                self.process_view.update_network_data(self.collected_data["network"])
+            # Also pass process data to network view for create_time correlation
+            if "network" in self.collected_data:
+                self.network_view.update_process_data(data)
+        elif collector_name == "services":
+            self.service_view.update_data(data)
+        elif collector_name == "files":
+            self.file_view.update_data(data)
+        elif collector_name == "system":
+            self.system_view.update_data(data)
+        elif collector_name == "persistence":
+            self.persistence_view.update_data(data)
+        elif collector_name == "dlls":
+            # Mark as full update to replace any incremental data
+            data['is_full_update'] = True
+            self.dll_view.update_data(data)
+        elif collector_name == "logins":
+            import sys
+            print(f"[MainWindow] Login collection finished: received data type={type(data)}", file=sys.stderr)
+            if isinstance(data, dict):
+                print(f"[MainWindow] Login data: logins={len(data.get('logins', []))}, users={len(data.get('users', []))}, has_error={'error' in data}", file=sys.stderr)
+                if 'error' in data:
+                    print(f"[MainWindow] Login collection error: {data.get('error')}", file=sys.stderr)
+            # Ensure login data has proper structure
+            if not isinstance(data, dict):
+                data = {'logins': [], 'users': []}
+            else:
+                if 'logins' not in data:
+                    data['logins'] = []
+                if 'users' not in data:
+                    data['users'] = []
+            print(f"[MainWindow] Updating login view with {len(data.get('logins', []))} logins", file=sys.stderr)
+            self.login_view.update_data(data)
+        elif collector_name == "applications":
+            self.app_view.update_data(data)
+        elif collector_name == "firewall":
+            self.firewall_view.update_data(data)
+            # If network data is already collected, pass it for correlation
+            if "network" in self.collected_data:
+                self.firewall_view.update_network_data(self.collected_data["network"])
+        elif collector_name == "network":
+            self.network_view.update_data(data)
+            # If firewall data is already collected, pass network data to firewall view
+            if "firewall" in self.collected_data:
+                self.firewall_view.update_network_data(data)
+            # If process data is already collected, update process view with network data
+            if "processes" in self.collected_data:
+                self.process_view.update_network_data(data)
+                # Also pass process data to network view for create_time correlation
+                self.network_view.update_process_data(self.collected_data["processes"])
+        if collector_name in self.collector_to_tab:
+            tab_index = self.collector_to_tab[collector_name]
+            self.tabs.setTabIcon(tab_index, self.green_icon)
+            # Remove from processing tabs set
+            self.processing_tabs.discard(tab_index)
+        
+        # Check if all collections are done (thread-safe check)
+        with QMutexLocker(self.progress_mutex):
+            all_done = (self.completed_count >= self.total_collectors)
+        
+        if all_done:
+            self.progress_bar.setVisible(False)
+            self.collect_all_btn.setEnabled(True)
+            self.statusBar.showMessage("Data collection complete")
+            # Stop blinking timer
+            self.blink_timer.stop()
+            self.processing_tabs.clear()
+            # Clean up finished threads (optional - can be done later)
+            self._cleanup_finished_threads()
+    
+    def on_dll_incremental_update(self, dll_info, collector_name):
+        """Handle incremental DLL updates (called from worker thread)."""
+        # Update DLL view incrementally
+        if collector_name == "dlls":
+            self.dll_view.add_dll_incremental(dll_info)
+    
+    def on_collection_error(self, error_message, collector_name):
+        """Handle collection errors (called from worker thread)."""
+        # Thread-safe progress update
+        with QMutexLocker(self.progress_mutex):
+            self.completed_count += 1
+            current_count = self.completed_count
+        
+        # Update progress bar (this is thread-safe, Qt handles cross-thread calls)
+        self.progress_bar.setValue(current_count)
+        
+        QMessageBox.warning(
+            self,
+            "Collection Error",
+            f"Error collecting {collector_name} data:\n{error_message}"
+        )
+        
+        # For login collector, update view with empty data structure
+        if collector_name == "logins":
+            error_data = {
+                'timestamp': None,
+                'error': error_message,
+                'logins': [],
+                'users': []
+            }
+            self.login_view.update_data(error_data)
+        
+        # Set green icon on the tab header even if there was an error (data was attempted)
+        if collector_name in self.collector_to_tab:
+            tab_index = self.collector_to_tab[collector_name]
+            self.tabs.setTabIcon(tab_index, self.green_icon)
+            # Remove from processing tabs set
+            self.processing_tabs.discard(tab_index)
+        
+        # Check if all collections are done (thread-safe check)
+        with QMutexLocker(self.progress_mutex):
+            all_done = (self.completed_count >= self.total_collectors)
+        
+        if all_done:
+            self.progress_bar.setVisible(False)
+            self.collect_all_btn.setEnabled(True)
+            self.statusBar.showMessage("Data collection complete (with errors)")
+            # Stop blinking timer
+            self.blink_timer.stop()
+            self.processing_tabs.clear()
+            # Clean up finished threads (optional - can be done later)
+            self._cleanup_finished_threads()
+
