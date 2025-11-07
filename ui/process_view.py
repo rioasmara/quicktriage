@@ -50,6 +50,8 @@ class ProcessView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Color legend
         legend = self._create_legend()
@@ -57,6 +59,8 @@ class ProcessView(QWidget):
         
         # Control bar
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.refresh_btn = QPushButton("Refresh")
         self.export_btn = QPushButton("Export")
@@ -350,51 +354,79 @@ class ProcessView(QWidget):
     def _create_legend(self):
         """Create a color legend widget."""
         legend_frame = QFrame()
-        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        legend_frame.setStyleSheet("QFrame { background-color: #f0f0f0; padding: 2px; }")
-        legend_frame.setMaximumHeight(30)
+        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        legend_frame.setStyleSheet(
+            "QFrame {"
+            " background-color: #121f2d;"
+            " padding: 8px 10px;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 6px;"
+            "}"
+        )
+        legend_frame.setMinimumHeight(48)
+        legend_frame.setMaximumHeight(56)
         legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setSpacing(5)
-        legend_layout.setContentsMargins(3, 2, 3, 2)
-        
-        legend_label = QLabel("<b>Legend:</b>")
-        legend_label.setStyleSheet("font-size: 9pt;")
-        legend_layout.addWidget(legend_label)
+        legend_layout.setSpacing(6)
+        legend_layout.setContentsMargins(6, 4, 6, 4)
         
         # Blinking red - LOLBIN with ESTABLISHED
         red_box = QLabel()
-        red_box.setFixedSize(12, 12)
-        red_box.setStyleSheet(f"background-color: rgb(255, 150, 150); border: 1px solid black;")
+        red_box.setFixedSize(14, 14)
+        red_box.setStyleSheet(
+            "background-color: #ff6464;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(red_box)
         red_label = QLabel("Blink Red: LOLBIN+ESTABLISHED")
-        red_label.setStyleSheet("font-size: 9pt;")
+        red_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_label)
         
         # Red - ESTABLISHED
         red_box2 = QLabel()
-        red_box2.setFixedSize(12, 12)
-        red_box2.setStyleSheet(f"background-color: rgb(255, 200, 200); border: 1px solid black;")
+        red_box2.setFixedSize(14, 14)
+        red_box2.setStyleSheet(
+            "background-color: #ff8585;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(red_box2)
         red_label2 = QLabel("Red: ESTABLISHED")
-        red_label2.setStyleSheet("font-size: 9pt;")
+        red_label2.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_label2)
         
         # Yellow - LISTEN
         yellow_box = QLabel()
-        yellow_box.setFixedSize(12, 12)
-        yellow_box.setStyleSheet(f"background-color: rgb(255, 255, 200); border: 1px solid black;")
+        yellow_box.setFixedSize(14, 14)
+        yellow_box.setStyleSheet(
+            "background-color: #f6d96f;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(yellow_box)
         yellow_label = QLabel("Yellow: LISTEN")
-        yellow_label.setStyleSheet("font-size: 9pt;")
+        yellow_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(yellow_label)
         
         # Light blue - LOLBIN
         blue_box = QLabel()
-        blue_box.setFixedSize(12, 12)
-        blue_box.setStyleSheet(f"background-color: rgb(200, 230, 255); border: 1px solid black;")
+        blue_box.setFixedSize(14, 14)
+        blue_box.setStyleSheet(
+            "background-color: #5fc4ff;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(blue_box)
         blue_label = QLabel("Light Blue: LOLBIN")
-        blue_label.setStyleSheet("font-size: 9pt;")
+        blue_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(blue_label)
         
         legend_layout.addStretch()

@@ -50,6 +50,8 @@ class NetworkView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Color legend
         legend = self._create_legend()
@@ -58,6 +60,8 @@ class NetworkView(QWidget):
         # Statistics group
         stats_group = QGroupBox("Network Statistics")
         stats_layout = QGridLayout()
+        stats_layout.setContentsMargins(4, 4, 4, 4)
+        stats_layout.setSpacing(4)
         
         self.stats_labels = {
             'bytes_sent': QLabel("Bytes Sent: N/A"),
@@ -76,6 +80,8 @@ class NetworkView(QWidget):
         
         # Control bar
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search connections...")
@@ -102,6 +108,10 @@ class NetworkView(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.resizeColumnsToContents()
+        
+        # Enable tooltips and connect to itemEntered signal for hover tooltips
+        self.table.setMouseTracking(True)
+        self.table.itemEntered.connect(self._on_item_hovered)
         
         layout.addWidget(self.table)
     
@@ -269,54 +279,199 @@ class NetworkView(QWidget):
             with open(filename, 'w') as f:
                 json.dump(self.network_data, f, indent=2)
     
+    def _on_item_hovered(self, item):
+        """Handle mouse hover over a table item to show process details tooltip."""
+        if not item:
+            return
+        
+        row = item.row()
+        if row < 0 or row >= self.table.rowCount():
+            return
+        
+        # Get PID from the first column (column 0)
+        pid_item = self.table.item(row, 0)
+        if not pid_item:
+            return
+        
+        try:
+            pid = int(pid_item.text())
+        except (ValueError, TypeError):
+            return
+        
+        # Get process details (parent and children)
+        tooltip_text = self._get_process_details_tooltip(pid)
+        
+        # Set tooltip on all items in the row with rich text enabled
+        for col in range(self.table.columnCount()):
+            cell_item = self.table.item(row, col)
+            if cell_item:
+                cell_item.setToolTip(tooltip_text)
+    
+    def _escape_html(self, text):
+        """Escape HTML special characters."""
+        if not text:
+            return ""
+        text = str(text)
+        # Replace & first to avoid double-escaping
+        text = text.replace("&", "&amp;")
+        text = text.replace("<", "&lt;")
+        text = text.replace(">", "&gt;")
+        text = text.replace('"', "&quot;")
+        text = text.replace("'", "&#39;")
+        return text
+    
+    def _get_process_details_tooltip(self, pid):
+        """Get formatted tooltip text with parent and child process information."""
+        if not self.process_data or 'processes' not in self.process_data:
+            return f"<p style='white-space: pre-wrap;'>PID: {pid}<br/>No process data available</p>"
+        
+        # Find the current process
+        current_process = None
+        for proc in self.process_data['processes']:
+            if proc.get('pid') == pid:
+                current_process = proc
+                break
+        
+        if not current_process:
+            return f"<p style='white-space: pre-wrap;'>PID: {pid}<br/>Process not found in collected data</p>"
+        
+        # Build tooltip text with proper HTML formatting
+        html_parts = []
+        html_parts.append("<div style='font-family: monospace; white-space: pre-wrap; max-width: 500px;'>")
+        
+        # Process Details
+        html_parts.append("<b style='font-size: 11pt;'>Process Details</b><br/>")
+        html_parts.append(f"PID: {pid}<br/>")
+        process_name = self._escape_html(current_process.get('name', 'N/A'))
+        html_parts.append(f"Name: {process_name}<br/>")
+        html_parts.append("<br/>")
+        
+        # Find parent process
+        ppid = current_process.get('ppid')
+        if ppid:
+            parent_process = None
+            for proc in self.process_data['processes']:
+                if proc.get('pid') == ppid:
+                    parent_process = proc
+                    break
+            
+            if parent_process:
+                html_parts.append("<b>Parent Process:</b><br/>")
+                html_parts.append(f"&nbsp;&nbsp;PID: {ppid}<br/>")
+                parent_name = self._escape_html(parent_process.get('name', 'N/A'))
+                html_parts.append(f"&nbsp;&nbsp;Name: {parent_name}<br/>")
+                exe_path = parent_process.get('exe', 'N/A')
+                exe_path = self._escape_html(exe_path)
+                # Truncate long paths for better display
+                if len(exe_path) > 70:
+                    exe_path = exe_path[:67] + "..."
+                html_parts.append(f"&nbsp;&nbsp;Path: {exe_path}<br/>")
+            else:
+                html_parts.append("<b>Parent Process:</b><br/>")
+                html_parts.append(f"&nbsp;&nbsp;PID: {ppid} (not found in collected data)<br/>")
+        else:
+            html_parts.append("<b>Parent Process:</b> None (root process)<br/>")
+        
+        html_parts.append("<br/>")
+        
+        # Find child processes
+        child_processes = []
+        for proc in self.process_data['processes']:
+            if proc.get('ppid') == pid:
+                child_processes.append(proc)
+        
+        if child_processes:
+            html_parts.append(f"<b>Child Processes ({len(child_processes)}):</b><br/>")
+            # Show up to 10 child processes to avoid tooltip being too large
+            for i, child in enumerate(child_processes[:10]):
+                child_name = self._escape_html(child.get('name', 'N/A'))
+                child_pid = child.get('pid', 'N/A')
+                html_parts.append(f"&nbsp;&nbsp;{i+1}. PID: {child_pid} - {child_name}<br/>")
+            if len(child_processes) > 10:
+                html_parts.append(f"&nbsp;&nbsp;... and {len(child_processes) - 10} more<br/>")
+        else:
+            html_parts.append("<b>Child Processes:</b> None<br/>")
+        
+        html_parts.append("</div>")
+        
+        return "".join(html_parts)
+    
     def _create_legend(self):
         """Create a color legend widget."""
         legend_frame = QFrame()
-        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        legend_frame.setStyleSheet("QFrame { background-color: #f0f0f0; padding: 2px; }")
-        legend_frame.setMaximumHeight(30)
+        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        legend_frame.setStyleSheet(
+            "QFrame {"
+            " background-color: #121f2d;"
+            " padding: 8px 10px;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 6px;"
+            "}"
+        )
+        legend_frame.setMinimumHeight(48)
+        legend_frame.setMaximumHeight(56)
         legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setSpacing(5)
-        legend_layout.setContentsMargins(3, 2, 3, 2)
-        
-        legend_label = QLabel("<b>Legend:</b>")
-        legend_label.setStyleSheet("font-size: 9pt;")
-        legend_layout.addWidget(legend_label)
+        legend_layout.setSpacing(6)
+        legend_layout.setContentsMargins(6, 4, 6, 4)
         
         # Blinking red - LOLBIN with ESTABLISHED
         red_box = QLabel()
-        red_box.setFixedSize(12, 12)
-        red_box.setStyleSheet(f"background-color: rgb(255, 150, 150); border: 1px solid black;")
+        red_box.setFixedSize(14, 14)
+        red_box.setStyleSheet(
+            "background-color: #ff6464;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(red_box)
         red_label = QLabel("Blink Red: LOLBIN+ESTABLISHED")
-        red_label.setStyleSheet("font-size: 9pt;")
+        red_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_label)
         
         # Red - ESTABLISHED
         red_box2 = QLabel()
-        red_box2.setFixedSize(12, 12)
-        red_box2.setStyleSheet(f"background-color: rgb(255, 200, 200); border: 1px solid black;")
+        red_box2.setFixedSize(14, 14)
+        red_box2.setStyleSheet(
+            "background-color: #ff8585;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(red_box2)
         red_label2 = QLabel("Red: ESTABLISHED")
-        red_label2.setStyleSheet("font-size: 9pt;")
+        red_label2.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_label2)
         
         # Yellow - LISTEN
         yellow_box = QLabel()
-        yellow_box.setFixedSize(12, 12)
-        yellow_box.setStyleSheet(f"background-color: rgb(255, 255, 200); border: 1px solid black;")
+        yellow_box.setFixedSize(14, 14)
+        yellow_box.setStyleSheet(
+            "background-color: #f6d96f;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(yellow_box)
         yellow_label = QLabel("Yellow: LISTEN")
-        yellow_label.setStyleSheet("font-size: 9pt;")
+        yellow_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(yellow_label)
         
         # Light blue - LOLBIN
         blue_box = QLabel()
-        blue_box.setFixedSize(12, 12)
-        blue_box.setStyleSheet(f"background-color: rgb(200, 230, 255); border: 1px solid black;")
+        blue_box.setFixedSize(14, 14)
+        blue_box.setStyleSheet(
+            "background-color: #5fc4ff;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(blue_box)
         blue_label = QLabel("Light Blue: LOLBIN")
-        blue_label.setStyleSheet("font-size: 9pt;")
+        blue_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(blue_label)
         
         legend_layout.addStretch()

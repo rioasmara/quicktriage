@@ -17,6 +17,7 @@ from collectors.persistence_collector import PersistenceCollector
 from collectors.dll_collector import DLLCollector
 from collectors.login_collector import LoginCollector
 from collectors.app_collector import AppCollector
+from collectors.binary_collector import BinaryCollector
 from collectors.firewall_collector import FirewallCollector
 from ui.process_view import ProcessView
 from ui.network_view import NetworkView
@@ -28,6 +29,7 @@ from ui.dll_view import DLLView
 from ui.login_view import LoginView
 from ui.app_view import AppView
 from ui.firewall_view import FirewallView
+from ui.hayabusa_view import HayabusaView
 
 
 class CollectionThread(QThread):
@@ -46,9 +48,16 @@ class CollectionThread(QThread):
             # For DLL collector, set up incremental callback
             if self.collector_name == "dlls" and hasattr(self.collector, 'incremental_callback'):
                 # Create a callback that emits incremental updates
-                def incremental_callback(dll_info):
+                def dll_incremental_callback(dll_info):
                     self.incremental_update.emit(dll_info, self.collector_name)
-                self.collector.incremental_callback = incremental_callback
+                self.collector.incremental_callback = dll_incremental_callback
+            
+            # For binaries collector, set up incremental callback
+            elif self.collector_name == "binaries" and hasattr(self.collector, 'incremental_callback'):
+                # Create a callback that emits incremental updates
+                def binary_incremental_callback(binary_info):
+                    self.incremental_update.emit(binary_info, self.collector_name)
+                self.collector.incremental_callback = binary_incremental_callback
             
             import sys
             print(f"[CollectionThread] {self.collector_name} thread starting collection...", file=sys.stderr)
@@ -102,6 +111,7 @@ class MainWindow(QMainWindow):
             "dlls": DLLCollector(),
             "logins": LoginCollector(),
             "applications": AppCollector(),
+            "binaries": BinaryCollector(),
             "firewall": FirewallCollector()
         }
         
@@ -127,6 +137,7 @@ class MainWindow(QMainWindow):
             "dlls": 6,
             "logins": 7,
             "applications": 8,
+            "binaries": 8,  # Same tab as applications
             "firewall": 9
         }
         
@@ -196,6 +207,8 @@ class MainWindow(QMainWindow):
             return LoginCollector()
         elif name == "applications":
             return AppCollector()
+        elif name == "binaries":
+            return BinaryCollector()
         elif name == "firewall":
             return FirewallCollector()
         else:
@@ -224,20 +237,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         
         layout = QVBoxLayout(central_widget)
-        
-        # Control buttons
-        button_layout = QHBoxLayout()
-        self.collect_all_btn = QPushButton("Collect All Data")
-        self.collect_all_btn.clicked.connect(self.collect_all_data)
-        button_layout.addWidget(self.collect_all_btn)
-        
-        # Progress bar (beside the button)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        button_layout.addWidget(self.progress_bar)
-        
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Tab widget for different views
         self.tabs = QTabWidget()
@@ -253,6 +254,7 @@ class MainWindow(QMainWindow):
         self.login_view = LoginView()
         self.app_view = AppView()
         self.firewall_view = FirewallView()
+        self.hayabusa_view = HayabusaView()
         
         # Add tabs
         self.tabs.addTab(self.process_view, "Processes")
@@ -265,12 +267,25 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.login_view, "Logins")
         self.tabs.addTab(self.app_view, "Applications")
         self.tabs.addTab(self.firewall_view, "Firewall")
+        self.tabs.addTab(self.hayabusa_view, "Hayabusa")
         
         layout.addWidget(self.tabs)
         
-        # Status bar
+        # Status bar with collect button and progress bar
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
+        
+        # Add collect button to status bar
+        self.collect_all_btn = QPushButton("Collect All Data")
+        self.collect_all_btn.clicked.connect(self.collect_all_data)
+        self.statusBar.addPermanentWidget(self.collect_all_btn)
+        
+        # Progress bar in status bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setMaximumWidth(200)
+        self.statusBar.addPermanentWidget(self.progress_bar)
+        
         self.statusBar.showMessage("Ready")
     
     def create_green_icon(self):
@@ -328,10 +343,14 @@ class MainWindow(QMainWindow):
         self._cleanup_existing_threads()
         
         # Initialize all tabs as processing and set red blinking icons
-        self.processing_tabs = set(range(self.tabs.count()))
+        collector_tab_indices = set(self.collector_to_tab.values())
+        self.processing_tabs = set(collector_tab_indices)
         self.is_red_bright = True
-        for tab_index in self.processing_tabs:
-            self.tabs.setTabIcon(tab_index, self.red_icon_bright)
+        for tab_index in range(self.tabs.count()):
+            if tab_index in collector_tab_indices:
+                self.tabs.setTabIcon(tab_index, self.red_icon_bright)
+            else:
+                self.tabs.setTabIcon(tab_index, QIcon())
         
         # Start blinking timer
         self.blink_timer.start(500)  # Blink every 500ms
@@ -342,6 +361,9 @@ class MainWindow(QMainWindow):
         
         # Clear DLL view before starting new collection (for incremental updates)
         self.dll_view.clear_data()
+        
+        # Clear binary table before starting new collection (for incremental updates)
+        self.app_view.clear_binary_data()
         
         # Clear previous thread references
         self.collection_threads.clear()
@@ -359,6 +381,9 @@ class MainWindow(QMainWindow):
             # Connect incremental updates for DLL collector
             if name == "dlls":
                 thread.incremental_update.connect(self.on_dll_incremental_update)
+            # Connect incremental updates for binaries collector
+            elif name == "binaries":
+                thread.incremental_update.connect(self.on_binary_incremental_update)
             self.collection_threads[name] = thread
             thread.start()  # All threads start immediately and run in parallel
     
@@ -415,6 +440,8 @@ class MainWindow(QMainWindow):
             self.login_view.update_data(data)
         elif collector_name == "applications":
             self.app_view.update_data(data)
+        elif collector_name == "binaries":
+            self.app_view.update_binary_data(data)
         elif collector_name == "firewall":
             self.firewall_view.update_data(data)
             # If network data is already collected, pass it for correlation
@@ -455,6 +482,12 @@ class MainWindow(QMainWindow):
         # Update DLL view incrementally
         if collector_name == "dlls":
             self.dll_view.add_dll_incremental(dll_info)
+    
+    def on_binary_incremental_update(self, binary_info, collector_name):
+        """Handle incremental binary updates (called from worker thread)."""
+        # Update binary view incrementally
+        if collector_name == "binaries":
+            self.app_view.add_binary_incremental(binary_info)
     
     def on_collection_error(self, error_message, collector_name):
         """Handle collection errors (called from worker thread)."""

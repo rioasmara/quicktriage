@@ -20,9 +20,13 @@ class FileView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Control bar
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search files...")

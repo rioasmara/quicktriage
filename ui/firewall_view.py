@@ -24,6 +24,8 @@ class FirewallView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Color legend
         legend = self._create_legend()
@@ -31,6 +33,8 @@ class FirewallView(QWidget):
         
         # Control bar
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search rules...")
@@ -95,19 +99,15 @@ class FirewallView(QWidget):
     
     def _correlate_network_with_firewall(self):
         """Correlate network connections with firewall rules."""
-        import sys
         if not self.firewall_data or not self.network_data:
-            print(f"[FirewallView] Correlation skipped: firewall_data={self.firewall_data is not None}, network_data={self.network_data is not None}", flush=True)
             self.matched_rules = set()
             return
         
         connections = self.network_data.get('connections', []) or []
         if not connections:
-            print(f"[FirewallView] Correlation skipped: no connections", flush=True)
             self.matched_rules = set()
             return
         
-        print(f"[FirewallView] Starting correlation: {len(self.firewall_data)} rules, {len(connections)} connections", flush=True)
         self.matched_rules = set()
         
         # For each connection, find matching firewall rules
@@ -197,9 +197,6 @@ class FirewallView(QWidget):
                 
                 # This rule matches the connection
                 self.matched_rules.add(idx)
-                print(f"[FirewallView] Rule {idx} '{rule.get('name', 'N/A')}' matches connection {conn_idx}: {local_addr} -> {remote_addr}", flush=True)
-        
-        print(f"[FirewallView] Correlation complete: {len(self.matched_rules)} rules matched", flush=True)
     
     def _parse_address(self, address_str):
         """Parse an address string like '192.168.1.1:8080' into IP and port."""
@@ -302,10 +299,8 @@ class FirewallView(QWidget):
         if 'error' in data:
             # Show error message
             error_msg = data.get('error', 'Unknown error')
-            print(f"[FirewallView] Error: {error_msg}", flush=True)
         
         rules_list = data.get('rules', []) or []
-        print(f"[FirewallView] Received {len(rules_list)} rules", flush=True)
         self.firewall_data = rules_list
         
         # Re-correlate with network data if available
@@ -420,7 +415,6 @@ class FirewallView(QWidget):
                     if rule_idx in self.matched_rules:
                         # Highlight the entire row with bright yellow background
                         highlight_color = QColor(255, 255, 150)  # Bright yellow (more visible)
-                        print(f"[FirewallView] Highlighting rule {rule_idx} '{name}' at row {row}", flush=True)
                         for col in range(13):
                             item = self.table.item(row, col)
                             if item:
@@ -437,7 +431,7 @@ class FirewallView(QWidget):
                     # Rule not found in firewall_data (shouldn't happen)
                     pass
                 except Exception as e:
-                    print(f"[FirewallView] Error highlighting rule: {e}", flush=True)
+                    pass
                 
             except Exception as e:
                 # Still add the row with error info
@@ -528,42 +522,64 @@ class FirewallView(QWidget):
     def _create_legend(self):
         """Create a color legend widget."""
         legend_frame = QFrame()
-        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        legend_frame.setStyleSheet("QFrame { background-color: #f0f0f0; padding: 2px; }")
-        legend_frame.setMaximumHeight(30)
+        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        legend_frame.setStyleSheet(
+            "QFrame {"
+            " background-color: #121f2d;"
+            " padding: 8px 10px;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 6px;"
+            "}"
+        )
+        legend_frame.setMinimumHeight(48)
+        legend_frame.setMaximumHeight(56)
         legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setSpacing(5)
-        legend_layout.setContentsMargins(3, 2, 3, 2)
-        
-        legend_label = QLabel("<b>Legend:</b>")
-        legend_label.setStyleSheet("font-size: 9pt;")
-        legend_layout.addWidget(legend_label)
+        legend_layout.setSpacing(6)
+        legend_layout.setContentsMargins(6, 4, 6, 4)
         
         # Yellow - Matches active network connection
         yellow_box = QLabel()
-        yellow_box.setFixedSize(12, 12)
-        yellow_box.setStyleSheet(f"background-color: rgb(255, 255, 150); border: 1px solid black;")
+        yellow_box.setFixedSize(14, 14)
+        yellow_box.setStyleSheet(
+            "background-color: #f6d96f;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(yellow_box)
         yellow_label = QLabel("Yellow: Matches network connection")
-        yellow_label.setStyleSheet("font-size: 9pt;")
+        yellow_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(yellow_label)
         
         # Light green - Enabled/Allow
         green_box = QLabel()
-        green_box.setFixedSize(12, 12)
-        green_box.setStyleSheet(f"background-color: rgb(200, 255, 200); border: 1px solid black;")
+        green_box.setFixedSize(14, 14)
+        green_box.setStyleSheet(
+            "background-color: #58f29c;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(green_box)
         green_label = QLabel("Green: Enabled/Allow")
-        green_label.setStyleSheet("font-size: 9pt;")
+        green_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(green_label)
         
         # Light red - Disabled/Block
         red_box = QLabel()
-        red_box.setFixedSize(12, 12)
-        red_box.setStyleSheet(f"background-color: rgb(255, 200, 200); border: 1px solid black;")
+        red_box.setFixedSize(14, 14)
+        red_box.setStyleSheet(
+            "background-color: #ff8585;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(red_box)
         red_label = QLabel("Red: Disabled/Block")
-        red_label.setStyleSheet("font-size: 9pt;")
+        red_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_label)
         
         legend_layout.addStretch()

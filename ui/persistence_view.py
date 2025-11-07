@@ -47,6 +47,8 @@ class PersistenceView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Color legend
         legend = self._create_legend()
@@ -54,6 +56,8 @@ class PersistenceView(QWidget):
         
         # Control bar
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.refresh_btn = QPushButton("Refresh")
         self.export_btn = QPushButton("Export")
@@ -572,33 +576,49 @@ class PersistenceView(QWidget):
     def _create_legend(self):
         """Create a color legend widget."""
         legend_frame = QFrame()
-        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        legend_frame.setStyleSheet("QFrame { background-color: #f0f0f0; padding: 2px; }")
-        legend_frame.setMaximumHeight(30)
+        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        legend_frame.setStyleSheet(
+            "QFrame {"
+            " background-color: #121f2d;"
+            " padding: 8px 10px;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 6px;"
+            "}"
+        )
+        legend_frame.setMinimumHeight(48)
+        legend_frame.setMaximumHeight(56)
         legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setSpacing(5)
-        legend_layout.setContentsMargins(3, 2, 3, 2)
-        
-        legend_label = QLabel("<b>Legend:</b>")
-        legend_label.setStyleSheet("font-size: 9pt;")
-        legend_layout.addWidget(legend_label)
+        legend_layout.setSpacing(6)
+        legend_layout.setContentsMargins(6, 4, 6, 4)
         
         # Orange - Recently modified
         orange_box = QLabel()
-        orange_box.setFixedSize(12, 12)
-        orange_box.setStyleSheet(f"background-color: rgb(255, 200, 150); border: 1px solid black;")
+        orange_box.setFixedSize(14, 14)
+        orange_box.setStyleSheet(
+            "background-color: #f6a623;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(orange_box)
         orange_label = QLabel("Orange: Recently modified (30 days)")
-        orange_label.setStyleSheet("font-size: 9pt;")
+        orange_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(orange_label)
         
         # Light blue - LOLBIN
         blue_box = QLabel()
-        blue_box.setFixedSize(12, 12)
-        blue_box.setStyleSheet(f"background-color: rgb(200, 230, 255); border: 1px solid black;")
+        blue_box.setFixedSize(14, 14)
+        blue_box.setStyleSheet(
+            "background-color: #5fc4ff;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
         legend_layout.addWidget(blue_box)
         blue_label = QLabel("Light Blue: LOLBIN")
-        blue_label.setStyleSheet("font-size: 9pt;")
+        blue_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(blue_label)
         
         legend_layout.addStretch()

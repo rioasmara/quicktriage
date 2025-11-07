@@ -29,6 +29,8 @@ class DLLView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Color legend
         legend = self._create_legend()
@@ -36,6 +38,8 @@ class DLLView(QWidget):
         
         # Control bar
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.refresh_btn = QPushButton("Refresh")
         self.export_btn = QPushButton("Export")
@@ -172,6 +176,8 @@ class DLLView(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
             self._populate_row(row, dll_info)
+            # Auto-resize columns when a new record is added
+            self.table.resizeColumnsToContents()
         
         # Update statistics
         self.stats_label.setText(f"Total: {total} | Trusted: {trusted} | Untrusted: {untrusted} | Uncommon Paths: {uncommon_count}")
@@ -183,8 +189,7 @@ class DLLView(QWidget):
         for row, dll in enumerate(dlls):
             self._populate_row(row, dll)
         
-        # Don't auto-resize - let user manually resize columns to see full paths
-        # But resize if table is empty or very small
+        # Auto-resize columns when records are added
         if len(dlls) > 0:
             self.table.resizeColumnsToContents()
     
@@ -391,42 +396,62 @@ class DLLView(QWidget):
     def _create_legend(self):
         """Create a color legend widget."""
         legend_frame = QFrame()
-        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        legend_frame.setStyleSheet("QFrame { background-color: #f0f0f0; padding: 2px; }")
-        legend_frame.setMaximumHeight(30)
+        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        legend_frame.setStyleSheet(
+            "QFrame {"
+            " background-color: #121f2d;"
+            " padding: 8px 10px;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 6px;"
+            "}"
+        )
+        legend_frame.setMinimumHeight(48)
+        legend_frame.setMaximumHeight(56)
         legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setSpacing(5)
-        legend_layout.setContentsMargins(3, 2, 3, 2)
-        
-        legend_label = QLabel("<b>Legend:</b>")
-        legend_label.setStyleSheet("font-size: 9pt;")
-        legend_layout.addWidget(legend_label)
+        legend_layout.setSpacing(6)
+        legend_layout.setContentsMargins(6, 4, 6, 4)
         
         # Orange-yellow background with dark red text - Uncommon paths
         orange_box = QLabel()
-        orange_box.setFixedSize(12, 12)
-        orange_box.setStyleSheet(f"background-color: rgb(255, 240, 150); border: 1px solid black; color: rgb(150, 0, 0); font-size: 8pt;")
+        orange_box.setFixedSize(14, 14)
+        orange_box.setStyleSheet(
+            "background-color: #f6a623;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+            " color: #142030;"
+            " font-size: 9pt;"
+        )
         orange_box.setText("T")
         orange_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         legend_layout.addWidget(orange_box)
         orange_label = QLabel("Orange-Yellow: Uncommon paths")
-        orange_label.setStyleSheet("font-size: 9pt;")
+        orange_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(orange_label)
         
         # Red text - Untrusted/Invalid signature
         red_text_label = QLabel("Red Text")
-        red_text_label.setStyleSheet("color: rgb(200, 0, 0); font-weight: bold; font-size: 9pt;")
+        red_text_label.setStyleSheet(
+            "QLabel { color: #ff7a7a; font-weight: 600; font-size: 9pt; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_text_label)
         red_label = QLabel(": Untrusted/Invalid")
-        red_label.setStyleSheet("font-size: 9pt;")
+        red_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(red_label)
         
         # Green text - Trusted
         green_text_label = QLabel("Green Text")
-        green_text_label.setStyleSheet("color: rgb(0, 150, 0); font-weight: bold; font-size: 9pt;")
+        green_text_label.setStyleSheet(
+            "QLabel { color: #58f29c; font-weight: 600; font-size: 9pt; background-color: transparent; }"
+        )
         legend_layout.addWidget(green_text_label)
         green_label = QLabel(": Trusted")
-        green_label.setStyleSheet("font-size: 9pt;")
+        green_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
         legend_layout.addWidget(green_label)
         
         legend_layout.addStretch()

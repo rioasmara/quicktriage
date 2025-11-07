@@ -20,9 +20,13 @@ class SystemView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # Export button
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(4)
         button_layout.addStretch()
         self.export_btn = QPushButton("Export All Data")
         self.export_btn.clicked.connect(self.export_data)
@@ -169,6 +173,7 @@ class SystemView(QWidget):
         if filename:
             with open(filename, 'w') as f:
                 json.dump(self.system_data, f, indent=2)
+
 
 
 

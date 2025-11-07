@@ -34,11 +34,13 @@ class LoginView(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
         
         # Control bar (fixed at top)
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(4)
         
         self.export_btn = QPushButton("Export")
         self.export_btn.clicked.connect(self.export_data)
@@ -77,44 +79,110 @@ class LoginView(QWidget):
         # Create content widget for scrollable area
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(5, 5, 5, 5)
-        content_layout.setSpacing(10)
+        content_layout.setContentsMargins(4, 4, 4, 4)
+        content_layout.setSpacing(4)
         
         # Statistics panel above the chart
         stats_frame = QFrame()
+        stats_frame.setObjectName("stats_panel")
         stats_frame.setFrameStyle(QFrame.StyledPanel)
-        stats_frame.setStyleSheet("QFrame { background-color: #f5f5f5; border: 1px solid #cccccc; border-radius: 5px; padding: 5px; }")
+        stats_frame.setStyleSheet(
+            "QFrame#stats_panel {"
+            " background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            " stop:0 #0d1724, stop:1 #12263a);"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 10px;"
+            " padding: 14px;"
+            "}"
+            "QFrame#stats_panel QLabel[role='heading'] {"
+            " color: #7be9ff;"
+            " font-size: 12pt;"
+            " font-weight: 700;"
+            " letter-spacing: 0.5px;"
+            "}"
+            "QFrame#stats_panel QLabel[role='subheading'] {"
+            " color: #8fbad6;"
+            " font-size: 9pt;"
+            " padding-bottom: 4px;"
+            "}"
+            "QFrame#stats_panel QFrame[role='statCard'] {"
+            " background-color: rgba(15, 28, 41, 0.9);"
+            " border: 1px solid rgba(41, 182, 211, 0.25);"
+            " border-radius: 8px;"
+            " padding: 8px 10px;"
+            "}"
+            "QFrame#stats_panel QFrame[role='statCard']:hover {"
+            " border: 1px solid #29b6d3;"
+            " background-color: rgba(21, 40, 60, 0.95);"
+            "}"
+            "QFrame#stats_panel QLabel[role='statTitle'] {"
+            " color: #9fd1f5;"
+            " font-size: 8.5pt;"
+            " font-weight: 600;"
+            " letter-spacing: 0.4px;"
+            "}"
+            "QFrame#stats_panel QLabel[role='statValue'] {"
+            " color: #f1faff;"
+            " font-size: 18pt;"
+            " font-weight: 600;"
+            "}"
+            "QFrame#stats_panel QLabel[role='statValue'][variant='primary'] {"
+            " color: #7be9ff;"
+            " font-size: 20pt;"
+            "}"
+            "QFrame#stats_panel QLabel[role='statValue'][variant='alert'] {"
+            " color: #ff9f6e;"
+            "}"
+            "QFrame#stats_panel QLabel[role='statHint'] {"
+            " color: #6f8195;"
+            " font-size: 8pt;"
+            "}"
+        )
         stats_layout = QGridLayout(stats_frame)
-        stats_layout.setSpacing(5)
-        stats_layout.setContentsMargins(8, 8, 8, 8)
-        
-        # Create labels for statistics
-        self.stats_title = QLabel("<b>Forensic Statistics</b>")
-        self.stats_title.setStyleSheet("font-size: 12px; padding-bottom: 2px;")
-        stats_layout.addWidget(self.stats_title, 0, 0, 1, 4)
-        
-        self.total_logins_label = QLabel("Total Logins: N/A")
-        self.earliest_login_label = QLabel("Earliest Login: N/A")
-        self.latest_login_label = QLabel("Latest Login: N/A")
-        self.avg_duration_label = QLabel("Avg Session Duration: N/A")
-        self.day_logins_label = QLabel("Day Logins (6 AM - 6 PM): N/A")
-        self.night_logins_label = QLabel("Night Logins (6 PM - 6 AM): N/A")
-        self.failed_logins_label = QLabel("Failed Login Attempts: N/A")
-        self.unique_ips_label = QLabel("Unique Source IPs: N/A")
-        self.unique_workstations_label = QLabel("Unique Workstations: N/A")
-        self.most_active_hour_label = QLabel("Most Active Hour: N/A")
-        
-        # Arrange statistics in a 4-column grid for more compact layout
-        stats_layout.addWidget(self.total_logins_label, 1, 0)
-        stats_layout.addWidget(self.earliest_login_label, 1, 1)
-        stats_layout.addWidget(self.latest_login_label, 1, 2)
-        stats_layout.addWidget(self.avg_duration_label, 1, 3)
-        stats_layout.addWidget(self.day_logins_label, 2, 0)
-        stats_layout.addWidget(self.night_logins_label, 2, 1)
-        stats_layout.addWidget(self.failed_logins_label, 2, 2)
-        stats_layout.addWidget(self.unique_ips_label, 2, 3)
-        stats_layout.addWidget(self.unique_workstations_label, 3, 0)
-        stats_layout.addWidget(self.most_active_hour_label, 3, 1)
+        stats_layout.setHorizontalSpacing(14)
+        stats_layout.setVerticalSpacing(12)
+        stats_layout.setContentsMargins(4, 0, 4, 4)
+
+        # Title and subtitle
+        self.stats_title = QLabel("Authentication Snapshot")
+        self.stats_title.setProperty("role", "heading")
+        stats_layout.addWidget(self.stats_title, 0, 0, 1, 3)
+
+        self.stats_subtitle = QLabel("Flight deck telemetry for recent logons")
+        self.stats_subtitle.setProperty("role", "subheading")
+        stats_layout.addWidget(self.stats_subtitle, 1, 0, 1, 3)
+
+        # Create metric cards
+        self.stat_values = {}
+        self._metric_variants = {}
+        metric_specs = [
+            ("total_logins", "Total Logins", "Success events recorded", "primary"),
+            ("failed_logins", "Failed Attempts", "Alerts for event 4625", "default"),
+            ("avg_duration", "Avg Session", "Median observed session length", "primary"),
+            ("earliest_login", "Earliest Login", "First successful access", "default"),
+            ("latest_login", "Latest Login", "Most recent session", "default"),
+            ("day_logins", "Daytime Logins", "06:00 - 18:00 activity", "default"),
+            ("night_logins", "Nighttime Logins", "18:00 - 06:00 activity", "default"),
+            ("unique_ips", "Unique Source IPs", "Distinct client addresses", "default"),
+            ("unique_workstations", "Unique Workstations", "Originating hostnames", "default"),
+            ("most_active_hour", "Peak Hour", "Highest density in past data", "default"),
+        ]
+
+        row = 2
+        col = 0
+        columns = 3
+        for key, title, hint, variant in metric_specs:
+            card_frame, value_label = self._create_stat_card(title, hint, variant)
+            stats_layout.addWidget(card_frame, row, col)
+            self.stat_values[key] = value_label
+            self._metric_variants[key] = variant if variant else "default"
+            col += 1
+            if col >= columns:
+                col = 0
+                row += 1
+
+        # ensure layout consumes remaining space nicely
+        stats_layout.setRowStretch(row, 1)
         
         content_layout.addWidget(stats_frame)
         
@@ -140,37 +208,70 @@ class LoginView(QWidget):
         
         # Add scroll area to main layout
         main_layout.addWidget(scroll_area)
+
+    def _create_stat_card(self, title, hint, variant):
+        """Create a stylized statistics card with title, value placeholder, and hint."""
+        card_frame = QFrame()
+        card_frame.setProperty("role", "statCard")
+
+        card_layout = QVBoxLayout(card_frame)
+        card_layout.setContentsMargins(10, 8, 10, 10)
+        card_layout.setSpacing(2)
+
+        title_label = QLabel(title.upper())
+        title_label.setProperty("role", "statTitle")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        card_layout.addWidget(title_label)
+
+        value_label = QLabel("—")
+        value_label.setProperty("role", "statValue")
+        value_label.setProperty("variant", variant if variant else "default")
+        value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        card_layout.addWidget(value_label)
+
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setProperty("role", "statHint")
+            hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            card_layout.addWidget(hint_label)
+
+        card_layout.addStretch()
+        card_frame.setToolTip(f"{title} — {hint}" if hint else title)
+        return card_frame, value_label
+
+    def _set_stat_value(self, key, value, variant=None):
+        """Update a statistic card's value label and styling."""
+        label = self.stat_values.get(key)
+        if not label:
+            return
+        default_variant = self._metric_variants.get(key, "default")
+        effective_variant = variant if variant is not None else default_variant
+        label.setText(value)
+        label.setProperty("variant", effective_variant)
+        # Refresh style to apply new variant immediately
+        label.style().unpolish(label)
+        label.style().polish(label)
     
     def update_data(self, data):
         """Update the view with new login data."""
-        import sys
-        print(f"[LoginView] update_data called: data type={type(data)}", file=sys.stderr)
-        
         # Ensure data has proper structure even if empty or None
         if not data:
-            print(f"[LoginView] WARNING: data is empty or None, creating empty structure", file=sys.stderr)
             data = {'logins': [], 'users': []}
         else:
             # Ensure required keys exist
             if 'logins' not in data:
-                print(f"[LoginView] WARNING: 'logins' key missing, adding empty list", file=sys.stderr)
                 data['logins'] = []
             if 'users' not in data:
-                print(f"[LoginView] WARNING: 'users' key missing, adding empty list", file=sys.stderr)
                 data['users'] = []
-        
-        print(f"[LoginView] Data structure: logins={len(data.get('logins', []))}, users={len(data.get('users', []))}, has_error={'error' in data if isinstance(data, dict) else False}", file=sys.stderr)
         
         # Store the data (ensure we store a copy to avoid modifying the original)
         self.login_data = data.copy() if isinstance(data, dict) else data
         
         # Always update the view, even with empty data
-        print(f"[LoginView] Updating UI components...", file=sys.stderr)
         self.populate_user_filter(self.login_data)
         self.update_timeline_chart(self.login_data)
         self.update_histogram_chart(self.login_data)
         self.update_statistics(self.login_data, username=None)  # Show overall statistics
-        print(f"[LoginView] UI update complete", file=sys.stderr)
     
     def populate_user_filter(self, data):
         """Populate the user filter dropdown."""
@@ -448,7 +549,7 @@ class LoginView(QWidget):
                         sel.annotation.remove()
                     except:
                         pass
-                    sel.annotation = None
+                    # Note: sel.annotation is read-only, cannot set to None
                 current_annotation[0] = None
         else:
             # Fallback: use matplotlib's built-in annotation on hover
@@ -601,18 +702,10 @@ class LoginView(QWidget):
         # Check for error in data
         if isinstance(data, dict) and 'error' in data:
             error_msg = data.get('error', 'Unknown error')
-            # Show error message in statistics
-            self.stats_title.setText(f"<b>Forensic Statistics - ERROR</b>")
-            self.total_logins_label.setText(f"Error: {error_msg}")
-            self.earliest_login_label.setText("Earliest Login: N/A")
-            self.latest_login_label.setText("Latest Login: N/A")
-            self.avg_duration_label.setText("Avg Session Duration: N/A")
-            self.day_logins_label.setText("Day Logins (6 AM - 6 PM): N/A")
-            self.night_logins_label.setText("Night Logins (6 PM - 6 AM): N/A")
-            self.failed_logins_label.setText("Failed Login Attempts: N/A")
-            self.unique_ips_label.setText("Unique Source IPs: N/A")
-            self.unique_workstations_label.setText("Unique Workstations: N/A")
-            self.most_active_hour_label.setText("Most Active Hour: N/A")
+            self.stats_title.setText("Authentication Snapshot")
+            self.stats_subtitle.setText(f"Data error: {error_msg}")
+            for key in self.stat_values.keys():
+                self._set_stat_value(key, "—")
             return
         
         logins = data.get('logins', [])
@@ -620,23 +713,26 @@ class LoginView(QWidget):
         # Filter by username if specified
         if username:
             logins = [login for login in logins if login.get('username') == username]
-            title_text = f"<b>Forensic Statistics - User: {username}</b>"
+            title_text = f"Authentication Snapshot - {username}" if username else "Authentication Snapshot"
+            subtitle_text = "Focused metrics for the selected account" if logins else "No login telemetry for this account"
         else:
-            title_text = "<b>Forensic Statistics (Overall)</b>"
+            title_text = "Authentication Snapshot"
+            subtitle_text = "Flight deck telemetry for recent logons"
         
         self.stats_title.setText(title_text)
+        self.stats_subtitle.setText(subtitle_text)
         
         if not logins:
-            self.total_logins_label.setText("Total Logins: 0")
-            self.earliest_login_label.setText("Earliest Login: N/A")
-            self.latest_login_label.setText("Latest Login: N/A")
-            self.avg_duration_label.setText("Avg Session Duration: N/A")
-            self.day_logins_label.setText("Day Logins (6 AM - 6 PM): 0")
-            self.night_logins_label.setText("Night Logins (6 PM - 6 AM): 0")
-            self.failed_logins_label.setText("Failed Login Attempts: 0")
-            self.unique_ips_label.setText("Unique Source IPs: 0")
-            self.unique_workstations_label.setText("Unique Workstations: 0")
-            self.most_active_hour_label.setText("Most Active Hour: N/A")
+            self._set_stat_value("total_logins", "0", "primary")
+            self._set_stat_value("failed_logins", "0", "default")
+            self._set_stat_value("avg_duration", "—", "default")
+            self._set_stat_value("earliest_login", "—")
+            self._set_stat_value("latest_login", "—")
+            self._set_stat_value("day_logins", "0")
+            self._set_stat_value("night_logins", "0")
+            self._set_stat_value("unique_ips", "0")
+            self._set_stat_value("unique_workstations", "0")
+            self._set_stat_value("most_active_hour", "—")
             return
         
         # Parse login times
@@ -713,17 +809,17 @@ class LoginView(QWidget):
         
         # Update total logins
         total_logins = len(login_times)
-        self.total_logins_label.setText(f"Total Logins: {total_logins}")
+        self._set_stat_value("total_logins", str(total_logins), "primary")
         
         # Find earliest and latest login
         if login_times:
             earliest = min(login_times)
             latest = max(login_times)
-            self.earliest_login_label.setText(f"Earliest Login: {earliest.strftime('%Y-%m-%d %H:%M:%S')}")
-            self.latest_login_label.setText(f"Latest Login: {latest.strftime('%Y-%m-%d %H:%M:%S')}")
+            self._set_stat_value("earliest_login", earliest.strftime('%Y-%m-%d %H:%M:%S'))
+            self._set_stat_value("latest_login", latest.strftime('%Y-%m-%d %H:%M:%S'))
         else:
-            self.earliest_login_label.setText("Earliest Login: N/A")
-            self.latest_login_label.setText("Latest Login: N/A")
+            self._set_stat_value("earliest_login", "—")
+            self._set_stat_value("latest_login", "—")
         
         # Calculate average session duration
         # Pair logon events with subsequent logoff events for the same user
@@ -756,20 +852,21 @@ class LoginView(QWidget):
             else:
                 duration_str = f"{minutes}m"
             
-            self.avg_duration_label.setText(f"Avg Session Duration: {duration_str}")
+            self._set_stat_value("avg_duration", duration_str, "primary")
         else:
-            self.avg_duration_label.setText("Avg Session Duration: N/A")
+            self._set_stat_value("avg_duration", "—", "default")
         
         # Update day/night counts
-        self.day_logins_label.setText(f"Day Logins (6 AM - 6 PM): {day_count}")
-        self.night_logins_label.setText(f"Night Logins (6 PM - 6 AM): {night_count}")
+        self._set_stat_value("day_logins", str(day_count))
+        self._set_stat_value("night_logins", str(night_count))
         
         # Update failed login attempts
-        self.failed_logins_label.setText(f"Failed Login Attempts: {failed_logins}")
+        failed_variant = "alert" if failed_logins else "default"
+        self._set_stat_value("failed_logins", str(failed_logins), failed_variant)
         
         # Update unique IPs and workstations
-        self.unique_ips_label.setText(f"Unique Source IPs: {len(unique_ips)}")
-        self.unique_workstations_label.setText(f"Unique Workstations: {len(unique_workstations)}")
+        self._set_stat_value("unique_ips", str(len(unique_ips)))
+        self._set_stat_value("unique_workstations", str(len(unique_workstations)))
         
         # Calculate most active hour
         if hour_counts:
@@ -777,9 +874,15 @@ class LoginView(QWidget):
             hour_num = most_active_hour[0]
             count = most_active_hour[1]
             hour_str = f"{hour_num:02d}:00 ({count} logins)"
-            self.most_active_hour_label.setText(f"Most Active Hour: {hour_str}")
+            self._set_stat_value("most_active_hour", hour_str)
         else:
-            self.most_active_hour_label.setText("Most Active Hour: N/A")
+            self._set_stat_value("most_active_hour", "—")
+
+        # Update subtitle with context
+        success_count = total_logins
+        self.stats_subtitle.setText(
+            f"{success_count} successful logins / {failed_logins} failed / {len(unique_ips)} unique IPs"
+        )
     
     def on_user_filter_changed(self, text):
         """Handle user filter dropdown selection to filter chart, statistics, and events."""
