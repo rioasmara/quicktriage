@@ -5,10 +5,49 @@ DLL view widget for displaying DLL load information.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QMenu,
-    QRadioButton, QButtonGroup, QFrame
+    QRadioButton, QButtonGroup, QFrame, QStyledItemDelegate
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QBrush, QPainter
+
+
+class TableHighlightDelegate(QStyledItemDelegate):
+    """Custom delegate to paint backgrounds that won't be overridden by stylesheet."""
+    
+    def __init__(self, table_view):
+        super().__init__()
+        self.table_view = table_view
+    
+    def paint(self, painter, option, index):
+        """Paint the item with custom background if it has one."""
+        # Get row and column
+        row = index.row()
+        col = index.column()
+        
+        # Check if this cell has a highlight color stored in the item's data
+        item = self.table_view.item(row, col)
+        if item:
+            # Check if item has background/foreground set
+            bg_brush = item.background()
+            fg_brush = item.foreground()
+            
+            # If background is not default (has a color), paint it
+            if bg_brush.style() != 0:  # Not NoBrush
+                bg_color = bg_brush.color()
+                if bg_color.isValid() and bg_color != QColor(0, 0, 0, 0):  # Not transparent
+                    # Paint background
+                    painter.fillRect(option.rect, bg_color)
+                    
+                    # Set foreground color if specified
+                    if fg_brush.style() != 0:  # Not NoBrush
+                        fg_color = fg_brush.color()
+                        if fg_color.isValid():
+                            option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+        
+        # Let default delegate handle text rendering
+        super().paint(painter, option, index)
+
+
 import threading
 from datetime import datetime
 import subprocess
@@ -110,6 +149,8 @@ class DLLView(QWidget):
         self.table.customContextMenuRequested.connect(self.show_context_menu)
         # Don't auto-resize columns initially - let user resize manually to see full paths
         self.table.horizontalHeader().setStretchLastSection(False)
+        # Performance optimizations
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         
         layout.addWidget(self.table)
     
@@ -141,16 +182,20 @@ class DLLView(QWidget):
                         self.dll_data.append(dll)
                         existing_keys.add(key)
         
-        # Apply current filters
-        self.apply_filters()
+        # Defer heavy work to make UI responsive
+        def update_view():
+            # Apply current filters
+            self.apply_filters()
+            
+            # Update statistics
+            with self.dll_data_lock:
+                total = len(self.dll_data)
+                trusted = sum(1 for d in self.dll_data if d.get('is_trusted', False))
+                untrusted = total - trusted
+                uncommon_count = sum(1 for d in self.dll_data if not d.get('is_common_path', True))
+            self.stats_label.setText(f"Total: {total} | Trusted: {trusted} | Untrusted: {untrusted} | Uncommon Paths: {uncommon_count}")
         
-        # Update statistics
-        with self.dll_data_lock:
-            total = len(self.dll_data)
-            trusted = sum(1 for d in self.dll_data if d.get('is_trusted', False))
-            untrusted = total - trusted
-            uncommon_count = sum(1 for d in self.dll_data if not d.get('is_common_path', True))
-        self.stats_label.setText(f"Total: {total} | Trusted: {trusted} | Untrusted: {untrusted} | Uncommon Paths: {uncommon_count}")
+        QTimer.singleShot(0, update_view)
     
     def add_dll_incremental(self, dll_info):
         """Add a single DLL entry incrementally to the table."""
@@ -172,92 +217,108 @@ class DLLView(QWidget):
         should_show = self._should_show_dll(dll_info)
         
         if should_show:
-            # Add row to table
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self._populate_row(row, dll_info)
-            # Auto-resize columns when a new record is added
-            self.table.resizeColumnsToContents()
+            # Disable sorting and updates for better performance
+            was_sorting = self.table.isSortingEnabled()
+            self.table.setSortingEnabled(False)
+            self.table.setUpdatesEnabled(False)
+            
+            try:
+                # Add row to table
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self._populate_row(row, dll_info)
+            finally:
+                # Re-enable updates and sorting
+                self.table.setUpdatesEnabled(True)
+                self.table.setSortingEnabled(was_sorting)
         
-        # Update statistics
+        # Update statistics (only update label, don't resize columns on every increment)
         self.stats_label.setText(f"Total: {total} | Trusted: {trusted} | Untrusted: {untrusted} | Uncommon Paths: {uncommon_count}")
     
     def populate_table(self, dlls):
         """Populate the table with DLL data."""
-        self.table.setRowCount(len(dlls))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         
-        for row, dll in enumerate(dlls):
-            self._populate_row(row, dll)
-        
-        # Auto-resize columns when records are added
-        if len(dlls) > 0:
-            self.table.resizeColumnsToContents()
+        try:
+            self.table.setRowCount(len(dlls))
+            
+            for row, dll in enumerate(dlls):
+                self._populate_row(row, dll)
+            
+            # Auto-resize columns only once after all rows are populated
+            if len(dlls) > 0:
+                self.table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(was_sorting)
     
     def _populate_row(self, row, dll):
         """Populate a single row with DLL data."""
-        # Enhanced color for highlighting uncommon paths - more visible orange/yellow
-        uncommon_path_color = QBrush(QColor(255, 240, 150))  # More visible orange-yellow
+        # Enhanced color for highlighting uncommon paths - darker orange/yellow for better contrast
+        uncommon_path_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
+        uncommon_path_fg = QColor(0, 0, 0)  # Black text on yellow background
         
         is_uncommon_path = not dll.get('is_common_path', True)
         
         # PID
         pid_item = QTableWidgetItem(str(dll['pid']))
         if is_uncommon_path:
-            pid_item.setBackground(uncommon_path_color)
-            pid_item.setForeground(QBrush(QColor(150, 0, 0)))  # Dark red text for visibility
+            pid_item.setBackground(QBrush(uncommon_path_color))
+            pid_item.setForeground(QBrush(uncommon_path_fg))
         self.table.setItem(row, 0, pid_item)
         
         # Process Name
         process_item = QTableWidgetItem(dll['process_name'])
         if is_uncommon_path:
-            process_item.setBackground(uncommon_path_color)
-            process_item.setForeground(QBrush(QColor(150, 0, 0)))  # Dark red text for visibility
+            process_item.setBackground(QBrush(uncommon_path_color))
+            process_item.setForeground(QBrush(uncommon_path_fg))
         self.table.setItem(row, 1, process_item)
         
         # DLL Name
         dll_name_item = QTableWidgetItem(dll['dll_name'])
         if is_uncommon_path:
-            dll_name_item.setBackground(uncommon_path_color)
-            dll_name_item.setForeground(QBrush(QColor(150, 0, 0)))  # Dark red text for visibility
+            dll_name_item.setBackground(QBrush(uncommon_path_color))
+            dll_name_item.setForeground(QBrush(uncommon_path_fg))
         self.table.setItem(row, 2, dll_name_item)
         
         # DLL Path - don't truncate, show full path
         path_item = QTableWidgetItem(dll['dll_path'])
         path_item.setToolTip(dll['dll_path'])  # Always show tooltip with full path
         if is_uncommon_path:
-            path_item.setBackground(uncommon_path_color)
-            # Make the path bold/red to emphasize
-            path_item.setForeground(QBrush(QColor(200, 0, 0)))  # Dark red
+            path_item.setBackground(QBrush(uncommon_path_color))
+            path_item.setForeground(QBrush(uncommon_path_fg))
         self.table.setItem(row, 3, path_item)
         
         # Trusted Status
         trusted_item = QTableWidgetItem("Yes" if dll['is_trusted'] else "No")
         if not dll['is_trusted']:
-            trusted_item.setForeground(QBrush(QColor(200, 0, 0)))  # Red
+            trusted_item.setForeground(QBrush(QColor(220, 100, 100)))  # Darker red for better contrast
         else:
-            trusted_item.setForeground(QBrush(QColor(0, 150, 0)))  # Dark green
+            trusted_item.setForeground(QBrush(QColor(50, 180, 50)))  # Darker green for better contrast
         if is_uncommon_path:
-            trusted_item.setBackground(uncommon_path_color)
-            if not dll['is_trusted']:
-                trusted_item.setForeground(QBrush(QColor(150, 0, 0)))  # Darker red on uncommon path
+            trusted_item.setBackground(QBrush(uncommon_path_color))
+            trusted_item.setForeground(QBrush(uncommon_path_fg))  # Use black text on yellow background
         self.table.setItem(row, 4, trusted_item)
         
         # Signature Status
         status_item = QTableWidgetItem(dll['signature_status'])
         if dll['signature_status'] != 'Valid':
-            status_item.setForeground(QBrush(QColor(200, 0, 0)))  # Red
+            status_item.setForeground(QBrush(QColor(220, 100, 100)))  # Darker red for better contrast
         if is_uncommon_path:
-            status_item.setBackground(uncommon_path_color)
-            if dll['signature_status'] != 'Valid':
-                status_item.setForeground(QBrush(QColor(150, 0, 0)))  # Darker red on uncommon path
+            status_item.setBackground(QBrush(uncommon_path_color))
+            status_item.setForeground(QBrush(uncommon_path_fg))  # Use black text on yellow background
         self.table.setItem(row, 5, status_item)
         
         # Signer - don't truncate, show full signer info
         signer_item = QTableWidgetItem(dll['signer'])
         signer_item.setToolTip(dll['signer'])  # Always show tooltip with full signer
         if is_uncommon_path:
-            signer_item.setBackground(uncommon_path_color)
-            signer_item.setForeground(QBrush(QColor(150, 0, 0)))  # Dark red text for visibility
+            signer_item.setBackground(QBrush(uncommon_path_color))
+            signer_item.setForeground(QBrush(uncommon_path_fg))  # Use black text on yellow background
         self.table.setItem(row, 6, signer_item)
         
         # Creation Time
@@ -273,8 +334,8 @@ class DLLView(QWidget):
         
         created_item = QTableWidgetItem(creation_time)
         if is_uncommon_path:
-            created_item.setBackground(uncommon_path_color)
-            created_item.setForeground(QBrush(QColor(150, 0, 0)))  # Dark red text for visibility
+            created_item.setBackground(QBrush(uncommon_path_color))
+            created_item.setForeground(QBrush(uncommon_path_fg))  # Use black text on yellow background
         self.table.setItem(row, 7, created_item)
     
     def on_filter_changed(self, filter_type):
@@ -411,20 +472,16 @@ class DLLView(QWidget):
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
         
-        # Orange-yellow background with dark red text - Uncommon paths
+        # Orange-yellow background with black text - Uncommon paths (darker yellow/orange for better contrast)
         orange_box = QLabel()
         orange_box.setFixedSize(14, 14)
         orange_box.setStyleSheet(
-            "background-color: #f6a623;"
+            "background-color: #dcb432;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
-            " color: #142030;"
-            " font-size: 9pt;"
         )
-        orange_box.setText("T")
-        orange_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         legend_layout.addWidget(orange_box)
-        orange_label = QLabel("Orange-Yellow: Uncommon paths")
+        orange_label = QLabel("Yellow: Uncommon paths")
         orange_label.setStyleSheet(
             "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
         )

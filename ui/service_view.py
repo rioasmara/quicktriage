@@ -5,10 +5,10 @@ Service view widget for displaying service information.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QMessageBox,
-    QRadioButton, QButtonGroup, QFrame
+    QRadioButton, QButtonGroup
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QBrush
 import os
 
 
@@ -48,10 +48,6 @@ class ServiceView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
-        
-        # Color legend
-        legend = self._create_legend()
-        layout.addWidget(legend)
         
         # Control bar
         control_layout = QHBoxLayout()
@@ -102,14 +98,16 @@ class ServiceView(QWidget):
         
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "Service Name", "Display Name", "Status", "Start Type",
+            "Service Name", "Display Name", "Status", "LOLBIN", "Start Type",
             "Binary Path", "Description"
         ])
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        # Performance optimizations
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
         layout.addWidget(self.table)
@@ -120,7 +118,7 @@ class ServiceView(QWidget):
             self.error_label.setText("No data received.")
             self.error_label.setVisible(True)
             self.service_data = []
-            self.populate_table([])
+            QTimer.singleShot(0, lambda: self.populate_table([]))
             return
         
         if 'services' not in data:
@@ -128,7 +126,7 @@ class ServiceView(QWidget):
             self.error_label.setText(f"Error: {error_msg}")
             self.error_label.setVisible(True)
             self.service_data = []
-            self.populate_table([])
+            QTimer.singleShot(0, lambda: self.populate_table([]))
             # Also show a message box for visibility
             QMessageBox.warning(self, "Service Collection Error", error_msg)
             return
@@ -144,7 +142,8 @@ class ServiceView(QWidget):
         
         services_list = data['services'] or []
         self.service_data = services_list
-        self.populate_table(services_list)
+        # Defer heavy work to make UI responsive
+        QTimer.singleShot(0, lambda: self.populate_table(services_list))
         
         # If no services and no error, show a message
         if not self.service_data and 'error' not in data:
@@ -153,61 +152,72 @@ class ServiceView(QWidget):
     
     def populate_table(self, services):
         """Populate the table with service data."""
-        self.table.setRowCount(len(services))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         
-        for row, service in enumerate(services):
-            try:
-                # Safely convert all values to strings
-                name = str(service.get('name', 'N/A'))
-                display_name = str(service.get('display_name', 'N/A'))
-                status = str(service.get('status', 'N/A'))
-                start_type = str(service.get('start_type', 'N/A'))
-                binary_path = str(service.get('binary_path', 'N/A'))
-                description = str(service.get('description', 'N/A'))
-                
-                self.table.setItem(row, 0, QTableWidgetItem(name))
-                self.table.setItem(row, 1, QTableWidgetItem(display_name))
-                self.table.setItem(row, 2, QTableWidgetItem(status))
-                self.table.setItem(row, 3, QTableWidgetItem(start_type))
-                
-                path_item = QTableWidgetItem(binary_path)
-                if len(binary_path) > 50:
-                    path_item.setToolTip(binary_path)
-                self.table.setItem(row, 4, path_item)
-                
-                desc_item = QTableWidgetItem(description)
-                if len(description) > 50:
-                    desc_item.setToolTip(description)
-                self.table.setItem(row, 5, desc_item)
-                
-                # Check if executable name is a LOLBIN and highlight in blue
-                if binary_path and binary_path != 'N/A':
-                    # Extract executable name from binary path
-                    # Handle paths that might be quoted or have arguments
-                    executable_name = binary_path.split()[0].strip('"\'')
-                    executable_name = os.path.basename(executable_name).lower()
+        try:
+            self.table.setRowCount(len(services))
+            
+            for row, service in enumerate(services):
+                try:
+                    # Safely convert all values to strings
+                    name = str(service.get('name', 'N/A'))
+                    display_name = str(service.get('display_name', 'N/A'))
+                    status = str(service.get('status', 'N/A'))
+                    start_type = str(service.get('start_type', 'N/A'))
+                    binary_path = str(service.get('binary_path', 'N/A'))
+                    description = str(service.get('description', 'N/A'))
                     
-                    if executable_name in self.LOLBINS:
-                        # Darker blue for running LOLBIN services, light blue for others
-                        if status == 'Running':
-                            lolbin_color = QColor(150, 180, 255)  # Darker blue
-                        else:
-                            lolbin_color = QColor(200, 230, 255)  # Light blue
+                    self.table.setItem(row, 0, QTableWidgetItem(name))
+                    self.table.setItem(row, 1, QTableWidgetItem(display_name))
+                    self.table.setItem(row, 2, QTableWidgetItem(status))
+                    
+                    # Check if executable name is a LOLBIN and add to LOLBIN column
+                    is_lolbin = False
+                    if binary_path and binary_path != 'N/A':
+                        # Extract executable name from binary path
+                        # Handle paths that might be quoted or have arguments
+                        executable_name = binary_path.split()[0].strip('"\'')
+                        executable_name = os.path.basename(executable_name).lower()
                         
-                        for col in range(6):
-                            item = self.table.item(row, col)
-                            if item:
-                                item.setBackground(lolbin_color)
-            except Exception as e:
-                # Still add the row with error info
-                self.table.setItem(row, 0, QTableWidgetItem(service.get('name', f'Service {row}')))
-                self.table.setItem(row, 1, QTableWidgetItem('Error'))
-                self.table.setItem(row, 2, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 3, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 4, QTableWidgetItem(f'Error: {str(e)}'))
-                self.table.setItem(row, 5, QTableWidgetItem('N/A'))
-        
-        self.table.resizeColumnsToContents()
+                        if executable_name in self.LOLBINS:
+                            is_lolbin = True
+                    
+                    # Add LOLBIN column (after Status)
+                    lolbin_item = QTableWidgetItem("Yes" if is_lolbin else "No")
+                    if is_lolbin:
+                        lolbin_item.setForeground(QBrush(QColor(100, 160, 220)))  # Blue text for LOLBIN
+                    self.table.setItem(row, 3, lolbin_item)
+                    
+                    self.table.setItem(row, 4, QTableWidgetItem(start_type))
+                    
+                    path_item = QTableWidgetItem(binary_path)
+                    if len(binary_path) > 50:
+                        path_item.setToolTip(binary_path)
+                    self.table.setItem(row, 5, path_item)
+                    
+                    desc_item = QTableWidgetItem(description)
+                    if len(description) > 50:
+                        desc_item.setToolTip(description)
+                    self.table.setItem(row, 6, desc_item)
+                except Exception as e:
+                    # Still add the row with error info
+                    self.table.setItem(row, 0, QTableWidgetItem(service.get('name', f'Service {row}')))
+                    self.table.setItem(row, 1, QTableWidgetItem('Error'))
+                    self.table.setItem(row, 2, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 3, QTableWidgetItem('N/A'))  # LOLBIN column
+                    self.table.setItem(row, 4, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 5, QTableWidgetItem(f'Error: {str(e)}'))
+                    self.table.setItem(row, 6, QTableWidgetItem('N/A'))
+            
+            # Resize columns only once after all rows are populated
+            self.table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(was_sorting)
     
     def filter_services(self, text=None):
         """Filter services based on search text and status."""
@@ -266,54 +276,4 @@ class ServiceView(QWidget):
             with open(filename, 'w') as f:
                 json.dump(self.service_data, f, indent=2)
     
-    def _create_legend(self):
-        """Create a color legend widget."""
-        legend_frame = QFrame()
-        legend_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
-        legend_frame.setStyleSheet(
-            "QFrame {"
-            " background-color: #121f2d;"
-            " padding: 8px 10px;"
-            " border: 1px solid #29b6d3;"
-            " border-radius: 6px;"
-            "}"
-        )
-        legend_frame.setMinimumHeight(48)
-        legend_frame.setMaximumHeight(56)
-        legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setSpacing(6)
-        legend_layout.setContentsMargins(6, 4, 6, 4)
-        
-        # Darker blue - Running LOLBIN service
-        dark_blue_box = QLabel()
-        dark_blue_box.setFixedSize(14, 14)
-        dark_blue_box.setStyleSheet(
-            "background-color: #507be3;"
-            " border: 1px solid #29b6d3;"
-            " border-radius: 3px;"
-        )
-        legend_layout.addWidget(dark_blue_box)
-        dark_blue_label = QLabel("Dark Blue: Running LOLBIN")
-        dark_blue_label.setStyleSheet(
-            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
-        )
-        legend_layout.addWidget(dark_blue_label)
-        
-        # Light blue - Stopped LOLBIN service
-        light_blue_box = QLabel()
-        light_blue_box.setFixedSize(14, 14)
-        light_blue_box.setStyleSheet(
-            "background-color: #5fc4ff;"
-            " border: 1px solid #29b6d3;"
-            " border-radius: 3px;"
-        )
-        legend_layout.addWidget(light_blue_box)
-        light_blue_label = QLabel("Light Blue: Stopped LOLBIN")
-        light_blue_label.setStyleSheet(
-            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
-        )
-        legend_layout.addWidget(light_blue_label)
-        
-        legend_layout.addStretch()
-        return legend_frame
 

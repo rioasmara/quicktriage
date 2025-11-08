@@ -4,9 +4,10 @@ System view widget for displaying system information.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QHBoxLayout, QLabel, QGroupBox, QGridLayout, QTextEdit
+    QPushButton, QHBoxLayout, QLabel, QGroupBox, QGridLayout, QTextEdit,
+    QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 
 class SystemView(QWidget):
@@ -19,11 +20,12 @@ class SystemView(QWidget):
     
     def init_ui(self):
         """Initialize the user interface."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        # Main layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
         
-        # Export button
+        # Export button (outside scroll area)
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(4)
@@ -31,7 +33,18 @@ class SystemView(QWidget):
         self.export_btn = QPushButton("Export All Data")
         self.export_btn.clicked.connect(self.export_data)
         button_layout.addWidget(self.export_btn)
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
+        
+        # Create scroll area for scrollable content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        
+        # Create scrollable widget
+        scrollable_widget = QWidget()
+        layout = QVBoxLayout(scrollable_widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         
         # System Information
         system_group = QGroupBox("System Information")
@@ -69,6 +82,15 @@ class SystemView(QWidget):
         disk_group.setLayout(disk_layout)
         layout.addWidget(disk_group)
         
+        # Add stretch at the end to push content to top
+        layout.addStretch()
+        
+        # Set the scrollable widget as the scroll area's widget
+        scroll_area.setWidget(scrollable_widget)
+        
+        # Add scroll area to main layout
+        main_layout.addWidget(scroll_area)
+        
         # Store layouts for later use
         self.system_layout = system_layout
         self.cpu_layout = cpu_layout
@@ -81,21 +103,25 @@ class SystemView(QWidget):
         
         self.system_data = data
         
-        # Update system information
-        if 'system' in data:
-            self._update_system_info(data['system'])
+        # Defer heavy work to make UI responsive
+        def update_all():
+            # Update system information
+            if 'system' in data:
+                self._update_system_info(data['system'])
+            
+            # Update CPU information
+            if 'cpu' in data:
+                self._update_cpu_info(data['cpu'])
+            
+            # Update memory information
+            if 'memory' in data:
+                self._update_memory_info(data['memory'])
+            
+            # Update disk information
+            if 'disk' in data:
+                self._update_disk_info(data['disk'])
         
-        # Update CPU information
-        if 'cpu' in data:
-            self._update_cpu_info(data['cpu'])
-        
-        # Update memory information
-        if 'memory' in data:
-            self._update_memory_info(data['memory'])
-        
-        # Update disk information
-        if 'disk' in data:
-            self._update_disk_info(data['disk'])
+        QTimer.singleShot(0, update_all)
     
     def _update_system_info(self, system_info):
         """Update system information labels."""

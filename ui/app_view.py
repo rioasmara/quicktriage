@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QSplitter,
     QMenu, QDialog, QDialogButtonBox, QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 import os
 import subprocess
 
@@ -66,6 +66,8 @@ class AppView(QWidget):
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        # Performance optimizations
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
         apps_layout.addWidget(self.table)
@@ -110,6 +112,8 @@ class AppView(QWidget):
         self.binary_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.binary_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.binary_table.customContextMenuRequested.connect(self.show_binary_context_menu)
+        # Performance optimizations
+        self.binary_table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.binary_table.resizeColumnsToContents()
         
         binaries_layout.addWidget(self.binary_table)
@@ -139,147 +143,164 @@ class AppView(QWidget):
         self.binary_data.append(binary_info)
         self.filtered_binary_data.append(binary_info)
         
-        # Add row to table
-        row = self.binary_table.rowCount()
-        self.binary_table.insertRow(row)
+        # Disable sorting and updates for better performance
+        was_sorting = self.binary_table.isSortingEnabled()
+        self.binary_table.setSortingEnabled(False)
+        self.binary_table.setUpdatesEnabled(False)
         
         try:
-            # Safely convert all values to strings
-            name = str(binary_info.get('name', 'N/A'))
-            path = str(binary_info.get('path', 'N/A'))
-            extension = str(binary_info.get('extension', 'N/A'))
-            size_mb = str(binary_info.get('size_mb', 'N/A'))
-            modified = str(binary_info.get('modified', 'N/A'))
-            created = str(binary_info.get('created', 'N/A'))
-            user_dir = str(binary_info.get('user_directory', 'N/A'))
-            sha256 = str(binary_info.get('sha256', 'N/A'))
+            # Add row to table
+            row = self.binary_table.rowCount()
+            self.binary_table.insertRow(row)
             
-            self.binary_table.setItem(row, 0, QTableWidgetItem(name))
-            
-            path_item = QTableWidgetItem(path)
-            if len(path) > 50:
-                path_item.setToolTip(path)
-            self.binary_table.setItem(row, 1, path_item)
-            
-            self.binary_table.setItem(row, 2, QTableWidgetItem(extension))
-            self.binary_table.setItem(row, 3, QTableWidgetItem(str(size_mb)))
-            self.binary_table.setItem(row, 4, QTableWidgetItem(modified))
-            self.binary_table.setItem(row, 5, QTableWidgetItem(created))
-            self.binary_table.setItem(row, 6, QTableWidgetItem(user_dir))
-            
-            sha256_item = QTableWidgetItem(sha256)
-            if len(sha256) > 50:
-                sha256_item.setToolTip(sha256)
-            self.binary_table.setItem(row, 7, sha256_item)
-            
-            # Handle exports column
-            exports = binary_info.get('exports', [])
-            export_count = len(exports)
-            if export_count > 0:
-                # Show count and first few exports
-                if export_count <= 3:
-                    exports_text = f"{export_count}: {', '.join(exports)}"
+            try:
+                # Safely convert all values to strings
+                name = str(binary_info.get('name', 'N/A'))
+                path = str(binary_info.get('path', 'N/A'))
+                extension = str(binary_info.get('extension', 'N/A'))
+                size_mb = str(binary_info.get('size_mb', 'N/A'))
+                modified = str(binary_info.get('modified', 'N/A'))
+                created = str(binary_info.get('created', 'N/A'))
+                user_dir = str(binary_info.get('user_directory', 'N/A'))
+                sha256 = str(binary_info.get('sha256', 'N/A'))
+                
+                self.binary_table.setItem(row, 0, QTableWidgetItem(name))
+                
+                path_item = QTableWidgetItem(path)
+                if len(path) > 50:
+                    path_item.setToolTip(path)
+                self.binary_table.setItem(row, 1, path_item)
+                
+                self.binary_table.setItem(row, 2, QTableWidgetItem(extension))
+                self.binary_table.setItem(row, 3, QTableWidgetItem(str(size_mb)))
+                self.binary_table.setItem(row, 4, QTableWidgetItem(modified))
+                self.binary_table.setItem(row, 5, QTableWidgetItem(created))
+                self.binary_table.setItem(row, 6, QTableWidgetItem(user_dir))
+                
+                sha256_item = QTableWidgetItem(sha256)
+                if len(sha256) > 50:
+                    sha256_item.setToolTip(sha256)
+                self.binary_table.setItem(row, 7, sha256_item)
+                
+                # Handle exports column
+                exports = binary_info.get('exports', [])
+                export_count = len(exports)
+                if export_count > 0:
+                    # Show count and first few exports
+                    if export_count <= 3:
+                        exports_text = f"{export_count}: {', '.join(exports)}"
+                    else:
+                        exports_text = f"{export_count}: {', '.join(exports[:3])}..."
+                    exports_item = QTableWidgetItem(exports_text)
+                    # Set tooltip with all exports
+                    all_exports = ', '.join(exports)
+                    if len(all_exports) > 100:
+                        exports_item.setToolTip(all_exports)
+                    else:
+                        exports_item.setToolTip(all_exports)
+                    self.binary_table.setItem(row, 8, exports_item)
                 else:
-                    exports_text = f"{export_count}: {', '.join(exports[:3])}..."
-                exports_item = QTableWidgetItem(exports_text)
-                # Set tooltip with all exports
-                all_exports = ', '.join(exports)
-                if len(all_exports) > 100:
-                    exports_item.setToolTip(all_exports)
-                else:
-                    exports_item.setToolTip(all_exports)
-                self.binary_table.setItem(row, 8, exports_item)
-            else:
+                    self.binary_table.setItem(row, 8, QTableWidgetItem('N/A'))
+            except Exception as e:
+                # Still add the row with error info
+                self.binary_table.setItem(row, 0, QTableWidgetItem(binary_info.get('name', f'Binary {row}')))
+                self.binary_table.setItem(row, 1, QTableWidgetItem('Error'))
+                self.binary_table.setItem(row, 2, QTableWidgetItem('N/A'))
+                self.binary_table.setItem(row, 3, QTableWidgetItem('N/A'))
+                self.binary_table.setItem(row, 4, QTableWidgetItem('N/A'))
+                self.binary_table.setItem(row, 5, QTableWidgetItem('N/A'))
+                self.binary_table.setItem(row, 6, QTableWidgetItem('N/A'))
+                self.binary_table.setItem(row, 7, QTableWidgetItem(f'Error: {str(e)}'))
                 self.binary_table.setItem(row, 8, QTableWidgetItem('N/A'))
-            
-            # Auto-resize columns to fit content
-            self.binary_table.resizeColumnsToContents()
-        except Exception as e:
-            # Still add the row with error info
-            self.binary_table.setItem(row, 0, QTableWidgetItem(binary_info.get('name', f'Binary {row}')))
-            self.binary_table.setItem(row, 1, QTableWidgetItem('Error'))
-            self.binary_table.setItem(row, 2, QTableWidgetItem('N/A'))
-            self.binary_table.setItem(row, 3, QTableWidgetItem('N/A'))
-            self.binary_table.setItem(row, 4, QTableWidgetItem('N/A'))
-            self.binary_table.setItem(row, 5, QTableWidgetItem('N/A'))
-            self.binary_table.setItem(row, 6, QTableWidgetItem('N/A'))
-            self.binary_table.setItem(row, 7, QTableWidgetItem(f'Error: {str(e)}'))
-            self.binary_table.setItem(row, 8, QTableWidgetItem('N/A'))
-            
-            # Auto-resize columns to fit content
-            self.binary_table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting (don't resize columns on every increment)
+            self.binary_table.setUpdatesEnabled(True)
+            self.binary_table.setSortingEnabled(was_sorting)
     
     def update_data(self, data):
         """Update the view with new application data."""
         if not data:
             self.app_data = []
-            self.populate_table([])
+            QTimer.singleShot(0, lambda: self.populate_table([]))
             return
         
         apps_list = data.get('applications', []) or []
         self.app_data = apps_list
-        self.populate_table(apps_list)
+        # Defer heavy work to make UI responsive
+        QTimer.singleShot(0, lambda: self.populate_table(apps_list))
     
     def update_binary_data(self, data):
         """Update the view with new binary data."""
         if not data:
             self.binary_data = []
             self.filtered_binary_data = []
-            self.populate_binary_table([])
+            QTimer.singleShot(0, lambda: self.populate_binary_table([]))
             return
         
         binaries_list = data.get('binaries', []) or []
         self.binary_data = binaries_list
         self.filtered_binary_data = binaries_list  # Initialize filtered data
-        self.populate_binary_table(binaries_list)
+        # Defer heavy work to make UI responsive
+        QTimer.singleShot(0, lambda: self.populate_binary_table(binaries_list))
     
     def populate_table(self, apps):
         """Populate the table with application data."""
-        self.table.setRowCount(len(apps))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         
-        for row, app in enumerate(apps):
-            try:
-                # Safely convert all values to strings
-                name = str(app.get('name', 'N/A'))
-                version = str(app.get('version', 'N/A'))
-                publisher = str(app.get('publisher', 'N/A'))
-                install_date = str(app.get('install_date', 'N/A'))
-                install_location = str(app.get('install_location', 'N/A'))
-                size_mb = str(app.get('size_mb', 'N/A'))
-                uninstall_string = str(app.get('uninstall_string', 'N/A'))
-                registry_key = str(app.get('registry_key', 'N/A'))
-                
-                self.table.setItem(row, 0, QTableWidgetItem(name))
-                self.table.setItem(row, 1, QTableWidgetItem(version))
-                self.table.setItem(row, 2, QTableWidgetItem(publisher))
-                self.table.setItem(row, 3, QTableWidgetItem(install_date))
-                
-                location_item = QTableWidgetItem(install_location)
-                if len(install_location) > 50:
-                    location_item.setToolTip(install_location)
-                self.table.setItem(row, 4, location_item)
-                
-                self.table.setItem(row, 5, QTableWidgetItem(str(size_mb)))
-                
-                uninstall_item = QTableWidgetItem(uninstall_string)
-                if len(uninstall_string) > 50:
-                    uninstall_item.setToolTip(uninstall_string)
-                self.table.setItem(row, 6, uninstall_item)
-                
-                self.table.setItem(row, 7, QTableWidgetItem(registry_key))
-                
-            except Exception as e:
-                # Still add the row with error info
-                self.table.setItem(row, 0, QTableWidgetItem(app.get('name', f'App {row}')))
-                self.table.setItem(row, 1, QTableWidgetItem('Error'))
-                self.table.setItem(row, 2, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 3, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 4, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 5, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 6, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 7, QTableWidgetItem(f'Error: {str(e)}'))
-        
-        self.table.resizeColumnsToContents()
+        try:
+            self.table.setRowCount(len(apps))
+            
+            for row, app in enumerate(apps):
+                try:
+                    # Safely convert all values to strings
+                    name = str(app.get('name', 'N/A'))
+                    version = str(app.get('version', 'N/A'))
+                    publisher = str(app.get('publisher', 'N/A'))
+                    install_date = str(app.get('install_date', 'N/A'))
+                    install_location = str(app.get('install_location', 'N/A'))
+                    size_mb = str(app.get('size_mb', 'N/A'))
+                    uninstall_string = str(app.get('uninstall_string', 'N/A'))
+                    registry_key = str(app.get('registry_key', 'N/A'))
+                    
+                    self.table.setItem(row, 0, QTableWidgetItem(name))
+                    self.table.setItem(row, 1, QTableWidgetItem(version))
+                    self.table.setItem(row, 2, QTableWidgetItem(publisher))
+                    self.table.setItem(row, 3, QTableWidgetItem(install_date))
+                    
+                    location_item = QTableWidgetItem(install_location)
+                    if len(install_location) > 50:
+                        location_item.setToolTip(install_location)
+                    self.table.setItem(row, 4, location_item)
+                    
+                    self.table.setItem(row, 5, QTableWidgetItem(str(size_mb)))
+                    
+                    uninstall_item = QTableWidgetItem(uninstall_string)
+                    if len(uninstall_string) > 50:
+                        uninstall_item.setToolTip(uninstall_string)
+                    self.table.setItem(row, 6, uninstall_item)
+                    
+                    self.table.setItem(row, 7, QTableWidgetItem(registry_key))
+                    
+                except Exception as e:
+                    # Still add the row with error info
+                    self.table.setItem(row, 0, QTableWidgetItem(app.get('name', f'App {row}')))
+                    self.table.setItem(row, 1, QTableWidgetItem('Error'))
+                    self.table.setItem(row, 2, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 3, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 4, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 5, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 6, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 7, QTableWidgetItem(f'Error: {str(e)}'))
+            
+            # Resize columns only once after all rows are populated
+            self.table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(was_sorting)
     
     def filter_apps(self, text):
         """Filter applications based on search text."""
@@ -306,69 +327,79 @@ class AppView(QWidget):
         if not hasattr(self, 'binary_table') or self.binary_table is None:
             return
         
-        self.binary_table.setRowCount(len(binaries))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.binary_table.isSortingEnabled()
+        self.binary_table.setSortingEnabled(False)
+        self.binary_table.setUpdatesEnabled(False)
         
-        for row, binary in enumerate(binaries):
-            try:
-                # Safely convert all values to strings
-                name = str(binary.get('name', 'N/A'))
-                path = str(binary.get('path', 'N/A'))
-                extension = str(binary.get('extension', 'N/A'))
-                size_mb = str(binary.get('size_mb', 'N/A'))
-                modified = str(binary.get('modified', 'N/A'))
-                created = str(binary.get('created', 'N/A'))
-                user_dir = str(binary.get('user_directory', 'N/A'))
-                sha256 = str(binary.get('sha256', 'N/A'))
-                
-                self.binary_table.setItem(row, 0, QTableWidgetItem(name))
-                
-                path_item = QTableWidgetItem(path)
-                if len(path) > 50:
-                    path_item.setToolTip(path)
-                self.binary_table.setItem(row, 1, path_item)
-                
-                self.binary_table.setItem(row, 2, QTableWidgetItem(extension))
-                self.binary_table.setItem(row, 3, QTableWidgetItem(str(size_mb)))
-                self.binary_table.setItem(row, 4, QTableWidgetItem(modified))
-                self.binary_table.setItem(row, 5, QTableWidgetItem(created))
-                self.binary_table.setItem(row, 6, QTableWidgetItem(user_dir))
-                
-                sha256_item = QTableWidgetItem(sha256)
-                if len(sha256) > 50:
-                    sha256_item.setToolTip(sha256)
-                self.binary_table.setItem(row, 7, sha256_item)
-                
-                # Handle exports column
-                exports = binary.get('exports', [])
-                export_count = len(exports)
-                if export_count > 0:
-                    # Show count and first few exports
-                    if export_count <= 3:
-                        exports_text = f"{export_count}: {', '.join(exports)}"
+        try:
+            self.binary_table.setRowCount(len(binaries))
+            
+            for row, binary in enumerate(binaries):
+                try:
+                    # Safely convert all values to strings
+                    name = str(binary.get('name', 'N/A'))
+                    path = str(binary.get('path', 'N/A'))
+                    extension = str(binary.get('extension', 'N/A'))
+                    size_mb = str(binary.get('size_mb', 'N/A'))
+                    modified = str(binary.get('modified', 'N/A'))
+                    created = str(binary.get('created', 'N/A'))
+                    user_dir = str(binary.get('user_directory', 'N/A'))
+                    sha256 = str(binary.get('sha256', 'N/A'))
+                    
+                    self.binary_table.setItem(row, 0, QTableWidgetItem(name))
+                    
+                    path_item = QTableWidgetItem(path)
+                    if len(path) > 50:
+                        path_item.setToolTip(path)
+                    self.binary_table.setItem(row, 1, path_item)
+                    
+                    self.binary_table.setItem(row, 2, QTableWidgetItem(extension))
+                    self.binary_table.setItem(row, 3, QTableWidgetItem(str(size_mb)))
+                    self.binary_table.setItem(row, 4, QTableWidgetItem(modified))
+                    self.binary_table.setItem(row, 5, QTableWidgetItem(created))
+                    self.binary_table.setItem(row, 6, QTableWidgetItem(user_dir))
+                    
+                    sha256_item = QTableWidgetItem(sha256)
+                    if len(sha256) > 50:
+                        sha256_item.setToolTip(sha256)
+                    self.binary_table.setItem(row, 7, sha256_item)
+                    
+                    # Handle exports column
+                    exports = binary.get('exports', [])
+                    export_count = len(exports)
+                    if export_count > 0:
+                        # Show count and first few exports
+                        if export_count <= 3:
+                            exports_text = f"{export_count}: {', '.join(exports)}"
+                        else:
+                            exports_text = f"{export_count}: {', '.join(exports[:3])}..."
+                        exports_item = QTableWidgetItem(exports_text)
+                        # Set tooltip with all exports
+                        all_exports = ', '.join(exports)
+                        exports_item.setToolTip(all_exports)
+                        self.binary_table.setItem(row, 8, exports_item)
                     else:
-                        exports_text = f"{export_count}: {', '.join(exports[:3])}..."
-                    exports_item = QTableWidgetItem(exports_text)
-                    # Set tooltip with all exports
-                    all_exports = ', '.join(exports)
-                    exports_item.setToolTip(all_exports)
-                    self.binary_table.setItem(row, 8, exports_item)
-                else:
+                        self.binary_table.setItem(row, 8, QTableWidgetItem('N/A'))
+                    
+                except Exception as e:
+                    # Still add the row with error info
+                    self.binary_table.setItem(row, 0, QTableWidgetItem(binary.get('name', f'Binary {row}')))
+                    self.binary_table.setItem(row, 1, QTableWidgetItem('Error'))
+                    self.binary_table.setItem(row, 2, QTableWidgetItem('N/A'))
+                    self.binary_table.setItem(row, 3, QTableWidgetItem('N/A'))
+                    self.binary_table.setItem(row, 4, QTableWidgetItem('N/A'))
+                    self.binary_table.setItem(row, 5, QTableWidgetItem('N/A'))
+                    self.binary_table.setItem(row, 6, QTableWidgetItem('N/A'))
+                    self.binary_table.setItem(row, 7, QTableWidgetItem(f'Error: {str(e)}'))
                     self.binary_table.setItem(row, 8, QTableWidgetItem('N/A'))
-                
-            except Exception as e:
-                # Still add the row with error info
-                self.binary_table.setItem(row, 0, QTableWidgetItem(binary.get('name', f'Binary {row}')))
-                self.binary_table.setItem(row, 1, QTableWidgetItem('Error'))
-                self.binary_table.setItem(row, 2, QTableWidgetItem('N/A'))
-                self.binary_table.setItem(row, 3, QTableWidgetItem('N/A'))
-                self.binary_table.setItem(row, 4, QTableWidgetItem('N/A'))
-                self.binary_table.setItem(row, 5, QTableWidgetItem('N/A'))
-                self.binary_table.setItem(row, 6, QTableWidgetItem('N/A'))
-                self.binary_table.setItem(row, 7, QTableWidgetItem(f'Error: {str(e)}'))
-                self.binary_table.setItem(row, 8, QTableWidgetItem('N/A'))
-        
-        # Auto-resize columns to fit content
-        self.binary_table.resizeColumnsToContents()
+            
+            # Auto-resize columns only once after all rows are populated
+            self.binary_table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.binary_table.setUpdatesEnabled(True)
+            self.binary_table.setSortingEnabled(was_sorting)
     
     def filter_binaries(self, text):
         """Filter binaries based on search text."""

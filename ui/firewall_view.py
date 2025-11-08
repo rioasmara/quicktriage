@@ -5,10 +5,47 @@ Firewall view widget for displaying Windows Firewall rules.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QComboBox,
-    QCheckBox, QFrame
+    QCheckBox, QFrame, QStyledItemDelegate
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QBrush, QPainter
+
+
+class TableHighlightDelegate(QStyledItemDelegate):
+    """Custom delegate to paint backgrounds that won't be overridden by stylesheet."""
+    
+    def __init__(self, table_view):
+        super().__init__()
+        self.table_view = table_view
+    
+    def paint(self, painter, option, index):
+        """Paint the item with custom background if it has one."""
+        # Get row and column
+        row = index.row()
+        col = index.column()
+        
+        # Check if this cell has a highlight color stored in the item's data
+        item = self.table_view.item(row, col)
+        if item:
+            # Check if item has background/foreground set
+            bg_brush = item.background()
+            fg_brush = item.foreground()
+            
+            # If background is not default (has a color), paint it
+            if bg_brush.style() != 0:  # Not NoBrush
+                bg_color = bg_brush.color()
+                if bg_color.isValid() and bg_color != QColor(0, 0, 0, 0):  # Not transparent
+                    # Paint background
+                    painter.fillRect(option.rect, bg_color)
+                    
+                    # Set foreground color if specified
+                    if fg_brush.style() != 0:  # Not NoBrush
+                        fg_color = fg_brush.color()
+                        if fg_color.isValid():
+                            option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+        
+        # Let default delegate handle text rendering
+        super().paint(painter, option, index)
 
 
 class FirewallView(QWidget):
@@ -82,9 +119,13 @@ class FirewallView(QWidget):
             "Local Ports", "Remote Ports", "Local Addresses", "Remote Addresses",
             "Application", "Service", "Description"
         ])
+        # Set custom delegate to paint backgrounds
+        self.table.setItemDelegate(TableHighlightDelegate(self.table))
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        # Performance optimizations
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
         layout.addWidget(self.table)
@@ -292,7 +333,7 @@ class FirewallView(QWidget):
         """Update the view with new firewall data."""
         if not data:
             self.firewall_data = []
-            self.populate_table([])
+            QTimer.singleShot(0, lambda: self.populate_table([]))
             return
         
         # Check for errors
@@ -317,139 +358,157 @@ class FirewallView(QWidget):
             enabled_only = self.enabled_only_checkbox.isChecked()
             
             # If any filters are active, apply them; otherwise show all
+            # Defer heavy work to make UI responsive
             if search_text or profile_filter != "All" or direction_filter != "All" or action_filter != "All" or enabled_only:
-                self.filter_rules()
+                QTimer.singleShot(0, lambda: self.filter_rules())
             else:
-                self.populate_table(rules_list)
+                QTimer.singleShot(0, lambda: self.populate_table(rules_list))
         else:
-            self.populate_table([])
+            QTimer.singleShot(0, lambda: self.populate_table([]))
     
     def populate_table(self, rules):
         """Populate the table with firewall rules."""
-        self.table.setRowCount(len(rules))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         
-        # Create a mapping from rule index in firewall_data to row index in filtered rules
-        # This is needed because matched_rules uses indices from firewall_data
-        rule_idx_to_row = {}
-        if self.firewall_data:
+        try:
+            self.table.setRowCount(len(rules))
+            
+            # Create a mapping from rule index in firewall_data to row index in filtered rules
+            # This is needed because matched_rules uses indices from firewall_data
+            rule_idx_to_row = {}
+            if self.firewall_data:
+                for row, rule in enumerate(rules):
+                    try:
+                        # Find the index of this rule in the original firewall_data
+                        rule_idx = self.firewall_data.index(rule)
+                        rule_idx_to_row[rule_idx] = row
+                    except ValueError:
+                        # Rule not found in original data (shouldn't happen)
+                        pass
+            
             for row, rule in enumerate(rules):
                 try:
-                    # Find the index of this rule in the original firewall_data
-                    rule_idx = self.firewall_data.index(rule)
-                    rule_idx_to_row[rule_idx] = row
-                except ValueError:
-                    # Rule not found in original data (shouldn't happen)
-                    pass
-        
-        for row, rule in enumerate(rules):
-            try:
-                # Safely convert all values to strings
-                name = str(rule.get('name', 'N/A'))
-                profile = str(rule.get('profile', 'N/A'))
-                direction = str(rule.get('direction', 'N/A'))
-                enabled = rule.get('enabled', False)
-                action = str(rule.get('action', 'N/A'))
-                protocol = str(rule.get('protocol', 'N/A'))
-                local_ports = str(rule.get('local_ports', 'N/A'))
-                remote_ports = str(rule.get('remote_ports', 'N/A'))
-                local_addresses = str(rule.get('local_addresses', 'N/A'))
-                remote_addresses = str(rule.get('remote_addresses', 'N/A'))
-                application_name = str(rule.get('application_name', 'N/A'))
-                service_name = str(rule.get('service_name', 'N/A'))
-                description = str(rule.get('description', 'N/A'))
-                
-                # Set items
-                self.table.setItem(row, 0, QTableWidgetItem(name))
-                self.table.setItem(row, 1, QTableWidgetItem(profile))
-                self.table.setItem(row, 2, QTableWidgetItem(direction))
-                
-                # Enabled status with color coding
-                enabled_item = QTableWidgetItem("Yes" if enabled else "No")
-                if enabled:
-                    enabled_item.setBackground(QColor(200, 255, 200))  # Light green
-                else:
-                    enabled_item.setBackground(QColor(255, 200, 200))  # Light red
-                self.table.setItem(row, 3, enabled_item)
-                
-                # Action with color coding
-                action_item = QTableWidgetItem(action)
-                if action == "Allow":
-                    action_item.setBackground(QColor(200, 255, 200))  # Light green
-                elif action == "Block":
-                    action_item.setBackground(QColor(255, 200, 200))  # Light red
-                self.table.setItem(row, 4, action_item)
-                
-                self.table.setItem(row, 5, QTableWidgetItem(protocol))
-                self.table.setItem(row, 6, QTableWidgetItem(local_ports))
-                self.table.setItem(row, 7, QTableWidgetItem(remote_ports))
-                
-                # Addresses with tooltips for long values
-                local_addr_item = QTableWidgetItem(local_addresses)
-                if len(local_addresses) > 30:
-                    local_addr_item.setToolTip(local_addresses)
-                self.table.setItem(row, 8, local_addr_item)
-                
-                remote_addr_item = QTableWidgetItem(remote_addresses)
-                if len(remote_addresses) > 30:
-                    remote_addr_item.setToolTip(remote_addresses)
-                self.table.setItem(row, 9, remote_addr_item)
-                
-                # Application name with tooltip
-                app_item = QTableWidgetItem(application_name)
-                if len(application_name) > 50:
-                    app_item.setToolTip(application_name)
-                self.table.setItem(row, 10, app_item)
-                
-                self.table.setItem(row, 11, QTableWidgetItem(service_name))
-                
-                # Description with tooltip
-                desc_item = QTableWidgetItem(description)
-                if len(description) > 50:
-                    desc_item.setToolTip(description)
-                self.table.setItem(row, 12, desc_item)
-                
-                # Highlight rules that match active network connections
-                try:
-                    # Find the index of this rule in the original firewall_data
-                    rule_idx = self.firewall_data.index(rule)
-                    if rule_idx in self.matched_rules:
-                        # Highlight the entire row with bright yellow background
-                        highlight_color = QColor(255, 255, 150)  # Bright yellow (more visible)
-                        for col in range(13):
-                            item = self.table.item(row, col)
-                            if item:
-                                # Override with yellow highlight for matched rules
-                                item.setBackground(highlight_color)
-                                # Add tooltip indicating match
-                                current_tooltip = item.toolTip()
-                                match_text = "✓ Matches active network connection"
-                                if current_tooltip:
-                                    item.setToolTip(f"{current_tooltip}\n\n{match_text}")
-                                else:
-                                    item.setToolTip(match_text)
-                except ValueError:
-                    # Rule not found in firewall_data (shouldn't happen)
-                    pass
+                    # Safely convert all values to strings
+                    name = str(rule.get('name', 'N/A'))
+                    profile = str(rule.get('profile', 'N/A'))
+                    direction = str(rule.get('direction', 'N/A'))
+                    enabled = rule.get('enabled', False)
+                    action = str(rule.get('action', 'N/A'))
+                    protocol = str(rule.get('protocol', 'N/A'))
+                    local_ports = str(rule.get('local_ports', 'N/A'))
+                    remote_ports = str(rule.get('remote_ports', 'N/A'))
+                    local_addresses = str(rule.get('local_addresses', 'N/A'))
+                    remote_addresses = str(rule.get('remote_addresses', 'N/A'))
+                    application_name = str(rule.get('application_name', 'N/A'))
+                    service_name = str(rule.get('service_name', 'N/A'))
+                    description = str(rule.get('description', 'N/A'))
+                    
+                    # Set items
+                    self.table.setItem(row, 0, QTableWidgetItem(name))
+                    self.table.setItem(row, 1, QTableWidgetItem(profile))
+                    self.table.setItem(row, 2, QTableWidgetItem(direction))
+                    
+                    # Enabled status with color coding - darker colors for better contrast
+                    enabled_item = QTableWidgetItem("Yes" if enabled else "No")
+                    if enabled:
+                        enabled_item.setBackground(QBrush(QColor(50, 180, 50)))  # Darker green for better contrast
+                        enabled_item.setForeground(QBrush(QColor(255, 255, 255)))  # White text
+                    else:
+                        enabled_item.setBackground(QBrush(QColor(220, 100, 100)))  # Darker red for better contrast
+                        enabled_item.setForeground(QBrush(QColor(255, 255, 255)))  # White text
+                    self.table.setItem(row, 3, enabled_item)
+                    
+                    # Action with color coding - darker colors for better contrast
+                    action_item = QTableWidgetItem(action)
+                    if action == "Allow":
+                        action_item.setBackground(QBrush(QColor(50, 180, 50)))  # Darker green for better contrast
+                        action_item.setForeground(QBrush(QColor(255, 255, 255)))  # White text
+                    elif action == "Block":
+                        action_item.setBackground(QBrush(QColor(220, 100, 100)))  # Darker red for better contrast
+                        action_item.setForeground(QBrush(QColor(255, 255, 255)))  # White text
+                    self.table.setItem(row, 4, action_item)
+                    
+                    self.table.setItem(row, 5, QTableWidgetItem(protocol))
+                    self.table.setItem(row, 6, QTableWidgetItem(local_ports))
+                    self.table.setItem(row, 7, QTableWidgetItem(remote_ports))
+                    
+                    # Addresses with tooltips for long values
+                    local_addr_item = QTableWidgetItem(local_addresses)
+                    if len(local_addresses) > 30:
+                        local_addr_item.setToolTip(local_addresses)
+                    self.table.setItem(row, 8, local_addr_item)
+                    
+                    remote_addr_item = QTableWidgetItem(remote_addresses)
+                    if len(remote_addresses) > 30:
+                        remote_addr_item.setToolTip(remote_addresses)
+                    self.table.setItem(row, 9, remote_addr_item)
+                    
+                    # Application name with tooltip
+                    app_item = QTableWidgetItem(application_name)
+                    if len(application_name) > 50:
+                        app_item.setToolTip(application_name)
+                    self.table.setItem(row, 10, app_item)
+                    
+                    self.table.setItem(row, 11, QTableWidgetItem(service_name))
+                    
+                    # Description with tooltip
+                    desc_item = QTableWidgetItem(description)
+                    if len(description) > 50:
+                        desc_item.setToolTip(description)
+                    self.table.setItem(row, 12, desc_item)
+                    
+                    # Highlight rules that match active network connections
+                    try:
+                        # Find the index of this rule in the original firewall_data
+                        rule_idx = self.firewall_data.index(rule)
+                        if rule_idx in self.matched_rules:
+                            # Highlight the entire row with darker yellow/orange background for better contrast
+                            highlight_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
+                            fg_color = QColor(0, 0, 0)  # Black text on yellow background
+                            for col in range(13):
+                                item = self.table.item(row, col)
+                                if item:
+                                    # Override with yellow highlight for matched rules
+                                    item.setBackground(QBrush(highlight_color))
+                                    item.setForeground(QBrush(fg_color))
+                                    # Add tooltip indicating match
+                                    current_tooltip = item.toolTip()
+                                    match_text = "✓ Matches active network connection"
+                                    if current_tooltip:
+                                        item.setToolTip(f"{current_tooltip}\n\n{match_text}")
+                                    else:
+                                        item.setToolTip(match_text)
+                    except ValueError:
+                        # Rule not found in firewall_data (shouldn't happen)
+                        pass
+                    except Exception as e:
+                        pass
+                    
                 except Exception as e:
-                    pass
-                
-            except Exception as e:
-                # Still add the row with error info
-                self.table.setItem(row, 0, QTableWidgetItem(rule.get('name', f'Rule {row}')))
-                self.table.setItem(row, 1, QTableWidgetItem('Error'))
-                self.table.setItem(row, 2, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 3, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 4, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 5, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 6, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 7, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 8, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 9, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 10, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 11, QTableWidgetItem('N/A'))
-                self.table.setItem(row, 12, QTableWidgetItem(f'Error: {str(e)}'))
-        
-        self.table.resizeColumnsToContents()
+                    # Still add the row with error info
+                    self.table.setItem(row, 0, QTableWidgetItem(rule.get('name', f'Rule {row}')))
+                    self.table.setItem(row, 1, QTableWidgetItem('Error'))
+                    self.table.setItem(row, 2, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 3, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 4, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 5, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 6, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 7, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 8, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 9, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 10, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 11, QTableWidgetItem('N/A'))
+                    self.table.setItem(row, 12, QTableWidgetItem(f'Error: {str(e)}'))
+            
+            # Resize columns only once after all rows are populated
+            self.table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(was_sorting)
     
     def filter_rules(self):
         """Filter rules based on search text and filters."""
@@ -537,11 +596,11 @@ class FirewallView(QWidget):
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
         
-        # Yellow - Matches active network connection
+        # Yellow - Matches active network connection (darker yellow/orange for better contrast)
         yellow_box = QLabel()
         yellow_box.setFixedSize(14, 14)
         yellow_box.setStyleSheet(
-            "background-color: #f6d96f;"
+            "background-color: #dcb432;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -552,11 +611,11 @@ class FirewallView(QWidget):
         )
         legend_layout.addWidget(yellow_label)
         
-        # Light green - Enabled/Allow
+        # Green - Enabled/Allow (darker green for better contrast)
         green_box = QLabel()
         green_box.setFixedSize(14, 14)
         green_box.setStyleSheet(
-            "background-color: #58f29c;"
+            "background-color: #32b432;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -567,11 +626,11 @@ class FirewallView(QWidget):
         )
         legend_layout.addWidget(green_label)
         
-        # Light red - Disabled/Block
+        # Red - Disabled/Block (darker red for better contrast)
         red_box = QLabel()
         red_box.setFixedSize(14, 14)
         red_box.setStyleSheet(
-            "background-color: #ff8585;"
+            "background-color: #dc6464;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )

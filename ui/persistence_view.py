@@ -5,10 +5,50 @@ Persistence view widget for displaying persistence mechanism information.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QTabWidget,
-    QTextEdit, QGroupBox, QTreeWidget, QTreeWidgetItem, QFrame
+    QTextEdit, QGroupBox, QTreeWidget, QTreeWidgetItem, QFrame,
+    QStyledItemDelegate
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QBrush, QPainter
+
+
+class TableHighlightDelegate(QStyledItemDelegate):
+    """Custom delegate to paint backgrounds that won't be overridden by stylesheet."""
+    
+    def __init__(self, table_view):
+        super().__init__()
+        self.table_view = table_view
+    
+    def paint(self, painter, option, index):
+        """Paint the item with custom background if it has one."""
+        # Get row and column
+        row = index.row()
+        col = index.column()
+        
+        # Check if this cell has a highlight color stored in the item's data
+        item = self.table_view.item(row, col)
+        if item:
+            # Check if item has background/foreground set
+            bg_brush = item.background()
+            fg_brush = item.foreground()
+            
+            # If background is not default (has a color), paint it
+            if bg_brush.style() != 0:  # Not NoBrush
+                bg_color = bg_brush.color()
+                if bg_color.isValid() and bg_color != QColor(0, 0, 0, 0):  # Not transparent
+                    # Paint background
+                    painter.fillRect(option.rect, bg_color)
+                    
+                    # Set foreground color if specified
+                    if fg_brush.style() != 0:  # Not NoBrush
+                        fg_color = fg_brush.color()
+                        if fg_color.isValid():
+                            option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+        
+        # Let default delegate handle text rendering
+        super().paint(painter, option, index)
+
+
 import json
 import os
 from datetime import datetime, timedelta
@@ -277,227 +317,282 @@ class PersistenceView(QWidget):
         
         mechanisms = data['mechanisms']
         
-        # Update registry run keys
-        if 'registry_run_keys' in mechanisms:
-            self.populate_registry_table(self.registry_run_table, mechanisms['registry_run_keys'])
+        # Defer all heavy work to make UI responsive
+        def update_all_tables():
+            # Update registry run keys
+            if 'registry_run_keys' in mechanisms:
+                self.populate_registry_table(self.registry_run_table, mechanisms['registry_run_keys'])
+            
+            # Update registry logon keys
+            if 'registry_logon_keys' in mechanisms:
+                self.populate_registry_table(self.registry_logon_table, mechanisms['registry_logon_keys'])
+            
+            # Update IFEO
+            if 'registry_image_hijack' in mechanisms:
+                self.populate_registry_table(self.registry_ifeo_table, mechanisms['registry_image_hijack'])
+            
+            # Update AppInit
+            if 'registry_appinit' in mechanisms:
+                self.populate_registry_table(self.registry_appinit_table, mechanisms['registry_appinit'])
+            
+            # Update startup folders
+            if 'startup_folders' in mechanisms:
+                self.populate_startup_folders_table(mechanisms['startup_folders'])
+            
+            # Update scheduled tasks
+            if 'scheduled_tasks' in mechanisms:
+                self.populate_scheduled_tasks_table(mechanisms['scheduled_tasks'])
+            
+            # Update WMI subscriptions
+            if 'wmi_subscriptions' in mechanisms:
+                self.populate_registry_table(self.wmi_subscriptions_table, mechanisms['wmi_subscriptions'])
+            
+            # Update services
+            if 'services' in mechanisms and 'suspicious_service_paths' in mechanisms['services']:
+                self.populate_services_table(mechanisms['services']['suspicious_service_paths'])
+            
+            # Update summary
+            self.update_summary(data)
         
-        # Update registry logon keys
-        if 'registry_logon_keys' in mechanisms:
-            self.populate_registry_table(self.registry_logon_table, mechanisms['registry_logon_keys'])
-        
-        # Update IFEO
-        if 'registry_image_hijack' in mechanisms:
-            self.populate_registry_table(self.registry_ifeo_table, mechanisms['registry_image_hijack'])
-        
-        # Update AppInit
-        if 'registry_appinit' in mechanisms:
-            self.populate_registry_table(self.registry_appinit_table, mechanisms['registry_appinit'])
-        
-        # Update startup folders
-        if 'startup_folders' in mechanisms:
-            self.populate_startup_folders_table(mechanisms['startup_folders'])
-        
-        # Update scheduled tasks
-        if 'scheduled_tasks' in mechanisms:
-            self.populate_scheduled_tasks_table(mechanisms['scheduled_tasks'])
-        
-        # Update WMI subscriptions
-        if 'wmi_subscriptions' in mechanisms:
-            self.populate_registry_table(self.wmi_subscriptions_table, mechanisms['wmi_subscriptions'])
-        
-        # Update services
-        if 'services' in mechanisms and 'suspicious_service_paths' in mechanisms['services']:
-            self.populate_services_table(mechanisms['services']['suspicious_service_paths'])
-        
-        # Update summary
-        self.update_summary(data)
+        QTimer.singleShot(0, update_all_tables)
     
     def populate_registry_table(self, table, registry_data):
         """Populate a registry table with data."""
-        rows = []
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = table.isSortingEnabled()
+        table.setSortingEnabled(False)
+        table.setUpdatesEnabled(False)
         
-        for entry in registry_data:
-            if 'error' in entry:
-                continue
+        try:
+            rows = []
             
-            hkey = entry.get('hkey', 'N/A')
-            key_path = entry.get('key', 'N/A')
-            
-            if 'values' in entry:
-                for value in entry['values']:
-                    rows.append({
-                        'hkey': hkey,
-                        'key_path': key_path,
-                        'name': value.get('name', ''),
-                        'value': value.get('value', '')
-                    })
-        
-        table.setRowCount(len(rows))
-        
-        for row_idx, row_data in enumerate(rows):
-            table.setItem(row_idx, 0, QTableWidgetItem(row_data['hkey']))
-            table.setItem(row_idx, 1, QTableWidgetItem(row_data['key_path']))
-            table.setItem(row_idx, 2, QTableWidgetItem(row_data['name']))
-            table.setItem(row_idx, 3, QTableWidgetItem(row_data['value']))
-            
-            # Check if value contains a LOLBIN and highlight in light blue
-            value_str = str(row_data['value'])
-            if value_str and value_str != 'N/A':
-                # Extract executable name from value (handle quoted paths and arguments)
-                executable_name = value_str.split()[0].strip('"\'')
-                executable_name = os.path.basename(executable_name).lower()
+            for entry in registry_data:
+                if 'error' in entry:
+                    continue
+                    
+                hkey = entry.get('hkey', 'N/A')
+                key_path = entry.get('key', 'N/A')
                 
-                if executable_name in self.LOLBINS:
-                    lolbin_color = QColor(200, 230, 255)  # Light blue
-                    for col in range(4):
-                        item = table.item(row_idx, col)
-                        if item:
-                            item.setBackground(lolbin_color)
-        
-        table.resizeColumnsToContents()
+                if 'values' in entry:
+                    for value in entry['values']:
+                        rows.append({
+                            'hkey': hkey,
+                            'key_path': key_path,
+                            'name': value.get('name', ''),
+                            'value': value.get('value', '')
+                        })
+            
+            table.setRowCount(len(rows))
+            
+            for row_idx, row_data in enumerate(rows):
+                table.setItem(row_idx, 0, QTableWidgetItem(row_data['hkey']))
+                table.setItem(row_idx, 1, QTableWidgetItem(row_data['key_path']))
+                table.setItem(row_idx, 2, QTableWidgetItem(row_data['name']))
+                table.setItem(row_idx, 3, QTableWidgetItem(row_data['value']))
+                
+                # Check if value contains a LOLBIN and highlight in light blue
+                value_str = str(row_data['value'])
+                if value_str and value_str != 'N/A':
+                    # Extract executable name from value (handle quoted paths and arguments)
+                    executable_name = value_str.split()[0].strip('"\'')
+                    executable_name = os.path.basename(executable_name).lower()
+                    
+                    if executable_name in self.LOLBINS:
+                        lolbin_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(4):
+                            item = table.item(row_idx, col)
+                            if item:
+                                item.setBackground(QBrush(lolbin_color))
+                                item.setForeground(QBrush(fg_color))
+            
+            # Resize columns only once after all rows are populated
+            table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            table.setUpdatesEnabled(True)
+            table.setSortingEnabled(was_sorting)
     
     def populate_startup_folders_table(self, folders_data):
         """Populate startup folders table."""
-        rows = []
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.startup_folders_table.isSortingEnabled()
+        self.startup_folders_table.setSortingEnabled(False)
+        self.startup_folders_table.setUpdatesEnabled(False)
         
-        for folder_entry in folders_data:
-            if 'error' in folder_entry:
-                continue
+        try:
+            rows = []
             
-            folder = folder_entry.get('folder', 'N/A')
-            
-            if 'files' in folder_entry:
-                for file in folder_entry['files']:
-                    rows.append({
-                        'folder': folder,
-                        'name': file.get('name', ''),
-                        'path': file.get('path', ''),
-                        'size': file.get('size', 0),
-                        'modified': file.get('modified', '')
-                    })
-        
-        self.startup_folders_table.setRowCount(len(rows))
-        
-        for row_idx, row_data in enumerate(rows):
-            self.startup_folders_table.setItem(row_idx, 0, QTableWidgetItem(row_data['folder']))
-            self.startup_folders_table.setItem(row_idx, 1, QTableWidgetItem(row_data['name']))
-            self.startup_folders_table.setItem(row_idx, 2, QTableWidgetItem(row_data['path']))
-            self.startup_folders_table.setItem(row_idx, 3, QTableWidgetItem(str(row_data['size'])))
-            self.startup_folders_table.setItem(row_idx, 4, QTableWidgetItem(row_data['modified']))
-            
-            # Check if path contains a LOLBIN and highlight in light blue
-            path_str = str(row_data['path'])
-            if path_str and path_str != 'N/A':
-                executable_name = os.path.basename(path_str).lower()
+            for folder_entry in folders_data:
+                if 'error' in folder_entry:
+                    continue
                 
-                if executable_name in self.LOLBINS:
-                    lolbin_color = QColor(200, 230, 255)  # Light blue
-                    for col in range(5):
-                        item = self.startup_folders_table.item(row_idx, col)
-                        if item:
-                            item.setBackground(lolbin_color)
-        
-        self.startup_folders_table.resizeColumnsToContents()
+                folder = folder_entry.get('folder', 'N/A')
+                
+                if 'files' in folder_entry:
+                    for file in folder_entry['files']:
+                        rows.append({
+                            'folder': folder,
+                            'name': file.get('name', ''),
+                            'path': file.get('path', ''),
+                            'size': file.get('size', 0),
+                            'modified': file.get('modified', '')
+                        })
+            
+            self.startup_folders_table.setRowCount(len(rows))
+            
+            for row_idx, row_data in enumerate(rows):
+                self.startup_folders_table.setItem(row_idx, 0, QTableWidgetItem(row_data['folder']))
+                self.startup_folders_table.setItem(row_idx, 1, QTableWidgetItem(row_data['name']))
+                self.startup_folders_table.setItem(row_idx, 2, QTableWidgetItem(row_data['path']))
+                self.startup_folders_table.setItem(row_idx, 3, QTableWidgetItem(str(row_data['size'])))
+                self.startup_folders_table.setItem(row_idx, 4, QTableWidgetItem(row_data['modified']))
+                
+                # Check if path contains a LOLBIN and highlight in light blue
+                path_str = str(row_data['path'])
+                if path_str and path_str != 'N/A':
+                    executable_name = os.path.basename(path_str).lower()
+                    
+                    if executable_name in self.LOLBINS:
+                        lolbin_color = QColor(200, 230, 255)  # Light blue
+                        for col in range(5):
+                            item = self.startup_folders_table.item(row_idx, col)
+                            if item:
+                                item.setBackground(lolbin_color)
+            
+            # Resize columns only once after all rows are populated
+            self.startup_folders_table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.startup_folders_table.setUpdatesEnabled(True)
+            self.startup_folders_table.setSortingEnabled(was_sorting)
     
     def populate_scheduled_tasks_table(self, tasks_data):
         """Populate scheduled tasks table."""
-        rows = []
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.scheduled_tasks_table.isSortingEnabled()
+        self.scheduled_tasks_table.setSortingEnabled(False)
+        self.scheduled_tasks_table.setUpdatesEnabled(False)
         
-        # Calculate the date 30 days ago
-        thirty_days_ago = datetime.now() - timedelta(days=30)
-        
-        for task in tasks_data:
-            if 'error' in task:
-                continue
+        try:
+            rows = []
             
-            rows.append({
-                'name': task.get('name', ''),
-                'path': task.get('path', ''),
-                'size': task.get('size', 0),
-                'modified': task.get('modified', '')
-            })
-        
-        self.scheduled_tasks_table.setRowCount(len(rows))
-        
-        for row_idx, row_data in enumerate(rows):
-            self.scheduled_tasks_table.setItem(row_idx, 0, QTableWidgetItem(row_data['name']))
-            self.scheduled_tasks_table.setItem(row_idx, 1, QTableWidgetItem(row_data['path']))
-            self.scheduled_tasks_table.setItem(row_idx, 2, QTableWidgetItem(str(row_data['size'])))
-            self.scheduled_tasks_table.setItem(row_idx, 3, QTableWidgetItem(row_data['modified']))
+            # Calculate the date 30 days ago
+            thirty_days_ago = datetime.now() - timedelta(days=30)
             
-            # Check if task was modified in the last 30 days
-            is_recently_modified = False
-            modified_str = row_data.get('modified', '')
-            if modified_str:
-                try:
-                    # Parse ISO format datetime (handles both with and without timezone)
-                    modified_str_clean = modified_str.replace('Z', '+00:00')
-                    modified_date = datetime.fromisoformat(modified_str_clean)
-                    # Remove timezone info for comparison if present
-                    if modified_date.tzinfo:
-                        modified_date = modified_date.replace(tzinfo=None)
-                    is_recently_modified = modified_date > thirty_days_ago
-                except (ValueError, AttributeError, TypeError):
-                    # If ISO parsing fails, try parsing as-is (already handled timezone)
+            for task in tasks_data:
+                if 'error' in task:
+                    continue
+                
+                rows.append({
+                    'name': task.get('name', ''),
+                    'path': task.get('path', ''),
+                    'size': task.get('size', 0),
+                    'modified': task.get('modified', '')
+                })
+            
+            self.scheduled_tasks_table.setRowCount(len(rows))
+            
+            for row_idx, row_data in enumerate(rows):
+                self.scheduled_tasks_table.setItem(row_idx, 0, QTableWidgetItem(row_data['name']))
+                self.scheduled_tasks_table.setItem(row_idx, 1, QTableWidgetItem(row_data['path']))
+                self.scheduled_tasks_table.setItem(row_idx, 2, QTableWidgetItem(str(row_data['size'])))
+                self.scheduled_tasks_table.setItem(row_idx, 3, QTableWidgetItem(row_data['modified']))
+                
+                # Check if task was modified in the last 30 days
+                is_recently_modified = False
+                modified_str = row_data.get('modified', '')
+                if modified_str:
                     try:
-                        modified_date = datetime.fromisoformat(modified_str)
+                        # Parse ISO format datetime (handles both with and without timezone)
+                        modified_str_clean = modified_str.replace('Z', '+00:00')
+                        modified_date = datetime.fromisoformat(modified_str_clean)
+                        # Remove timezone info for comparison if present
                         if modified_date.tzinfo:
                             modified_date = modified_date.replace(tzinfo=None)
                         is_recently_modified = modified_date > thirty_days_ago
                     except (ValueError, AttributeError, TypeError):
-                        # If all parsing fails, skip highlighting
-                        pass
+                        # If ISO parsing fails, try parsing as-is (already handled timezone)
+                        try:
+                            modified_date = datetime.fromisoformat(modified_str)
+                            if modified_date.tzinfo:
+                                modified_date = modified_date.replace(tzinfo=None)
+                            is_recently_modified = modified_date > thirty_days_ago
+                        except (ValueError, AttributeError, TypeError):
+                            # If all parsing fails, skip highlighting
+                            pass
+                
+                # Determine background color based on priority:
+                # 1. Recently modified (orange) - highest priority
+                # 2. LOLBIN (blue) - lower priority
+                background_color = None
+                foreground_color = None
+                
+                if is_recently_modified:
+                    background_color = QColor(220, 150, 50)  # Darker orange for better contrast
+                    foreground_color = QColor(0, 0, 0)  # Black text on orange background
+                else:
+                    # Check if path contains a LOLBIN and highlight in blue
+                    path_str = str(row_data['path'])
+                    if path_str and path_str != 'N/A':
+                        # Extract executable name from path (handle quoted paths and arguments)
+                        executable_name = path_str.split()[0].strip('"\'')
+                        executable_name = os.path.basename(executable_name).lower()
+                        
+                        if executable_name in self.LOLBINS:
+                            background_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                            foreground_color = QColor(255, 255, 255)  # White text for readability
+                
+                # Apply background color if set
+                if background_color:
+                    for col in range(4):
+                        item = self.scheduled_tasks_table.item(row_idx, col)
+                        if item:
+                            item.setBackground(QBrush(background_color))
+                            if foreground_color:
+                                item.setForeground(QBrush(foreground_color))
             
-            # Determine background color based on priority:
-            # 1. Recently modified (orange) - highest priority
-            # 2. LOLBIN (light blue) - lower priority
-            background_color = None
-            
-            if is_recently_modified:
-                background_color = QColor(255, 200, 150)  # Orange for recently modified
-            else:
-                # Check if path contains a LOLBIN and highlight in light blue
-                path_str = str(row_data['path'])
-                if path_str and path_str != 'N/A':
-                    # Extract executable name from path (handle quoted paths and arguments)
-                    executable_name = path_str.split()[0].strip('"\'')
-                    executable_name = os.path.basename(executable_name).lower()
-                    
-                    if executable_name in self.LOLBINS:
-                        background_color = QColor(200, 230, 255)  # Light blue for LOLBIN
-            
-            # Apply background color if set
-            if background_color:
-                for col in range(4):
-                    item = self.scheduled_tasks_table.item(row_idx, col)
-                    if item:
-                        item.setBackground(background_color)
-        
-        self.scheduled_tasks_table.resizeColumnsToContents()
+            # Resize columns only once after all rows are populated
+            self.scheduled_tasks_table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.scheduled_tasks_table.setUpdatesEnabled(True)
+            self.scheduled_tasks_table.setSortingEnabled(was_sorting)
     
     def populate_services_table(self, services_data):
         """Populate services table."""
-        self.services_table.setRowCount(len(services_data))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.services_table.isSortingEnabled()
+        self.services_table.setSortingEnabled(False)
+        self.services_table.setUpdatesEnabled(False)
         
-        for row_idx, service in enumerate(services_data):
-            self.services_table.setItem(row_idx, 0, QTableWidgetItem(service.get('service', '')))
-            self.services_table.setItem(row_idx, 1, QTableWidgetItem(service.get('image_path', '')))
+        try:
+            self.services_table.setRowCount(len(services_data))
             
-            # Check if image path contains a LOLBIN and highlight in light blue
-            image_path = service.get('image_path', '')
-            if image_path and image_path != 'N/A':
-                # Extract executable name from image path (handle quoted paths and arguments)
-                executable_name = image_path.split()[0].strip('"\'')
-                executable_name = os.path.basename(executable_name).lower()
+            for row_idx, service in enumerate(services_data):
+                self.services_table.setItem(row_idx, 0, QTableWidgetItem(service.get('service', '')))
+                self.services_table.setItem(row_idx, 1, QTableWidgetItem(service.get('image_path', '')))
                 
-                if executable_name in self.LOLBINS:
-                    lolbin_color = QColor(200, 230, 255)  # Light blue
-                    for col in range(2):
-                        item = self.services_table.item(row_idx, col)
-                        if item:
-                            item.setBackground(lolbin_color)
-        
-        self.services_table.resizeColumnsToContents()
+                # Check if image path contains a LOLBIN and highlight in light blue
+                image_path = service.get('image_path', '')
+                if image_path and image_path != 'N/A':
+                    # Extract executable name from image path (handle quoted paths and arguments)
+                    executable_name = image_path.split()[0].strip('"\'')
+                    executable_name = os.path.basename(executable_name).lower()
+                    
+                    if executable_name in self.LOLBINS:
+                        lolbin_color = QColor(200, 230, 255)  # Light blue
+                        for col in range(2):
+                            item = self.services_table.item(row_idx, col)
+                            if item:
+                                item.setBackground(lolbin_color)
+            
+            # Resize columns only once after all rows are populated
+            self.services_table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.services_table.setUpdatesEnabled(True)
+            self.services_table.setSortingEnabled(was_sorting)
     
     def update_summary(self, data):
         """Update summary text."""
@@ -591,11 +686,11 @@ class PersistenceView(QWidget):
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
         
-        # Orange - Recently modified
+        # Orange - Recently modified (darker orange for better contrast)
         orange_box = QLabel()
         orange_box.setFixedSize(14, 14)
         orange_box.setStyleSheet(
-            "background-color: #f6a623;"
+            "background-color: #dc9632;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -606,16 +701,16 @@ class PersistenceView(QWidget):
         )
         legend_layout.addWidget(orange_label)
         
-        # Light blue - LOLBIN
+        # Blue - LOLBIN (darker blue for better contrast)
         blue_box = QLabel()
         blue_box.setFixedSize(14, 14)
         blue_box.setStyleSheet(
-            "background-color: #5fc4ff;"
+            "background-color: #508cc8;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
         legend_layout.addWidget(blue_box)
-        blue_label = QLabel("Light Blue: LOLBIN")
+        blue_label = QLabel("Blue: LOLBIN")
         blue_label.setStyleSheet(
             "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
         )

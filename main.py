@@ -152,6 +152,12 @@ def main():
             padding: 4px 8px;
             border-bottom: 1px solid #182636;
             color: #b6ddff;
+            /* Don't set background-color here - allow programmatic backgrounds */
+        }
+
+        QTableWidget::item:hover:!selected {
+            /* Only show hover background if item doesn't have custom background */
+            background-color: #17273a;
         }
 
         QTableWidget::item:selected {
@@ -192,10 +198,17 @@ def main():
             padding: 4px 8px;
             border-bottom: 1px solid #182636;
             color: #b6ddff;
+            /* Don't set background-color here - allow programmatic backgrounds */
         }
 
-        QTreeWidget::item:hover {
+        QTreeWidget::item:hover:!selected {
+            /* Only show hover background if item doesn't have custom background */
             background-color: #17273a;
+        }
+        
+        QTreeWidget::item:selected {
+            background-color: #21405a;
+            color: #ffffff;
         }
 
         /* Input Fields */

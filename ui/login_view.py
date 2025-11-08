@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout,
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QGridLayout, QFrame, QComboBox, QScrollArea
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from datetime import datetime, timedelta
 import numpy as np
 import matplotlib
@@ -267,11 +267,15 @@ class LoginView(QWidget):
         # Store the data (ensure we store a copy to avoid modifying the original)
         self.login_data = data.copy() if isinstance(data, dict) else data
         
-        # Always update the view, even with empty data
-        self.populate_user_filter(self.login_data)
-        self.update_timeline_chart(self.login_data)
-        self.update_histogram_chart(self.login_data)
-        self.update_statistics(self.login_data, username=None)  # Show overall statistics
+        # Defer heavy work to make UI responsive
+        def update_view():
+            # Always update the view, even with empty data
+            self.populate_user_filter(self.login_data)
+            self.update_timeline_chart(self.login_data)
+            self.update_histogram_chart(self.login_data)
+            self.update_statistics(self.login_data, username=None)  # Show overall statistics
+        
+        QTimer.singleShot(0, update_view)
     
     def populate_user_filter(self, data):
         """Populate the user filter dropdown."""

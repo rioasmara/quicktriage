@@ -4,10 +4,100 @@ Process view widget for displaying process information.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QHBoxLayout, QLineEdit, QLabel, QFrame
+    QPushButton, QHBoxLayout, QLineEdit, QLabel, QFrame,
+    QStyledItemDelegate, QStyleOptionViewItem
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QBrush, QPainter
+
+
+class HighlightDelegate(QStyledItemDelegate):
+    """Custom delegate to paint backgrounds that won't be overridden by stylesheet."""
+    
+    def __init__(self, process_view):
+        super().__init__()
+        self.process_view = process_view
+        # Cache for faster lookups - map (row, parent_row) to tree item
+        self._item_cache = {}
+        self._cache_dirty = True
+    
+    def _get_tree_item(self, index):
+        """Get the QTreeWidgetItem from the index, using cache for performance."""
+        if self._cache_dirty:
+            self._rebuild_cache()
+        
+        parent = index.parent()
+        row = index.row()
+        parent_row = parent.row() if parent.isValid() else -1
+        cache_key = (row, parent_row)
+        
+        if cache_key in self._item_cache:
+            return self._item_cache[cache_key]
+        
+        # Fallback: find item directly
+        tree_widget = self.process_view.tree
+        tree_item = None
+        
+        if parent.isValid():
+            parent_row = parent.row()
+            if parent_row < tree_widget.topLevelItemCount():
+                parent_item = tree_widget.topLevelItem(parent_row)
+                if parent_item and row < parent_item.childCount():
+                    tree_item = parent_item.child(row)
+        else:
+            if row < tree_widget.topLevelItemCount():
+                tree_item = tree_widget.topLevelItem(row)
+        
+        if tree_item:
+            self._item_cache[cache_key] = tree_item
+        
+        return tree_item
+    
+    def _rebuild_cache(self):
+        """Rebuild the cache of tree items."""
+        self._item_cache.clear()
+        tree_widget = self.process_view.tree
+        
+        # Cache top-level items
+        for row in range(tree_widget.topLevelItemCount()):
+            item = tree_widget.topLevelItem(row)
+            if item:
+                self._item_cache[(row, -1)] = item
+                # Cache children
+                for child_row in range(item.childCount()):
+                    child = item.child(child_row)
+                    if child:
+                        self._item_cache[(child_row, row)] = child
+        
+        self._cache_dirty = False
+    
+    def paint(self, painter, option, index):
+        """Paint the item with custom background if it has one."""
+        # Quick check - if no highlights, use default painting
+        if not self.process_view.item_highlight_colors:
+            super().paint(painter, option, index)
+            return
+        
+        # Get tree item (cached for performance)
+        tree_item = self._get_tree_item(index)
+        
+        # Check if this item has a highlight color
+        if tree_item and tree_item in self.process_view.item_highlight_colors:
+            bg_color, fg_color = self.process_view.item_highlight_colors[tree_item]
+            
+            # Paint background for entire cell
+            painter.fillRect(option.rect, bg_color)
+            
+            # Use default delegate for text rendering (faster)
+            # Just set the foreground color if needed
+            if fg_color:
+                option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+            
+            # Let default delegate handle text rendering
+            super().paint(painter, option, index)
+        else:
+            # Default painting for non-highlighted items
+            super().paint(painter, option, index)
 
 
 class ProcessView(QWidget):
@@ -45,6 +135,8 @@ class ProcessView(QWidget):
         self.blink_timer = QTimer(self)
         self.blink_timer.timeout.connect(self._toggle_blink)
         self.blink_timer.start(500)  # Blink every 500ms
+        # Track highlight colors for each item
+        self.item_highlight_colors = {}  # {item: (bg_color, fg_color)}
         self.init_ui()
     
     def init_ui(self):
@@ -86,9 +178,12 @@ class ProcessView(QWidget):
             "Status", "Created", "Command Line"
         ])
         self.tree.setSortingEnabled(True)
-        self.tree.setAlternatingRowColors(True)
+        self.tree.setAlternatingRowColors(False)  # Disable to allow custom backgrounds
         self.tree.setSelectionBehavior(QTreeWidget.SelectRows)
         self.tree.resizeColumnToContents(0)
+        
+        # Set custom delegate to paint backgrounds
+        self.tree.setItemDelegate(HighlightDelegate(self))
         
         layout.addWidget(self.tree)
     
@@ -102,19 +197,27 @@ class ProcessView(QWidget):
             return
         
         self.process_data = processes
-        self.populate_tree(self.process_data)
+        # Defer heavy work to make UI responsive
+        # Use QTimer.singleShot to defer work after current event processing
+        QTimer.singleShot(0, lambda: self.populate_tree(self.process_data))
     
     def update_network_data(self, network_data):
         """Update network data for correlation with processes."""
         self.network_data = network_data
-        # Refresh the tree if process data is already loaded
+        # Debug: Check if network data is received
+        import sys
+        if network_data:
+            conn_count = len(network_data.get('connections', [])) if isinstance(network_data, dict) else 0
+            print(f"[ProcessView] Network data received: {conn_count} connections", file=sys.stderr)
+        # Refresh the tree if process data is already loaded - defer heavy work
         if self.process_data:
-            self.populate_tree(self.process_data)
+            QTimer.singleShot(0, lambda: self.populate_tree(self.process_data))
     
     def populate_tree(self, processes):
         """Populate the tree with process data organized by parent-child relationships."""
         # Stop blinking before clearing
         self.blinking_items.clear()
+        self.item_highlight_colors.clear()
         self.blink_state = False
         self.tree.clear()
         
@@ -123,6 +226,13 @@ class ProcessView(QWidget):
         
         # Build network status mapping from network data
         network_status_map = self._build_network_status_map()
+        
+        # Debug: Print network status map to see if it's being built correctly
+        if network_status_map:
+            import sys
+            print(f"[ProcessView] Network status map has {len(network_status_map)} entries", file=sys.stderr)
+            for pid, status in list(network_status_map.items())[:5]:  # Print first 5
+                print(f"[ProcessView] PID {pid}: {status}", file=sys.stderr)
         
         # Create a mapping of PID to process
         process_map = {p['pid']: p for p in processes}
@@ -151,6 +261,12 @@ class ProcessView(QWidget):
         def create_tree_item(process):
             """Create a tree item for a process and its children."""
             pid = process['pid']
+            # Ensure PID is an integer for consistent comparison
+            try:
+                pid = int(pid)
+            except (ValueError, TypeError):
+                pass
+            
             if pid in added_pids:
                 # Skip if already added (avoid duplicates)
                 return None
@@ -173,35 +289,56 @@ class ProcessView(QWidget):
             process_name_lower = process['name'].lower()
             is_lolbin = process_name_lower in self.LOLBINS
             
-            if network_status_map:
-                pid_status = network_status_map.get(pid)
-                if pid_status == 'established' and is_lolbin:
-                    # Blinking red for LOLBINs with established connections (highest priority)
-                    self.blinking_items[pid] = item
-                    # Start with red background
-                    item.setBackground(0, QColor(255, 150, 150))
-                    for col in range(1, 8):
-                        item.setBackground(col, QColor(255, 150, 150))
-                elif pid_status == 'established':
-                    # Red for established connections
-                    item.setBackground(0, QColor(255, 200, 200))
-                    for col in range(1, 8):
-                        item.setBackground(col, QColor(255, 200, 200))
-                elif pid_status == 'listening':
-                    # Yellow for listening processes
-                    item.setBackground(0, QColor(255, 255, 200))
-                    for col in range(1, 8):
-                        item.setBackground(col, QColor(255, 255, 200))
-                elif is_lolbin:
-                    # Light blue for LOLBINs (when no network status)
-                    item.setBackground(0, QColor(200, 230, 255))
-                    for col in range(1, 8):
-                        item.setBackground(col, QColor(200, 230, 255))
+            # Get network status for this PID
+            pid_status = network_status_map.get(pid) if network_status_map else None
+            
+            # Debug: Check if PID matches
+            if pid_status:
+                import sys
+                print(f"[ProcessView] Applying highlight to PID {pid}: status={pid_status}, is_lolbin={is_lolbin}", file=sys.stderr)
+            
+            # Apply highlighting based on priority
+            # Store highlight colors in our tracking dict for the delegate to use
+            # Using darker backgrounds with white text for better readability
+            if pid_status == 'established' and is_lolbin:
+                # Blinking red for LOLBINs with established connections (highest priority)
+                self.blinking_items[pid] = item
+                bg_color = QColor(200, 50, 50)  # Darker red for better contrast
+                fg_color = QColor(255, 255, 255)  # White text for readability
+                self.item_highlight_colors[item] = (bg_color, fg_color)
+                # Store highlight type in UserRole data
+                item.setData(0, Qt.ItemDataRole.UserRole, "blink-red")
+                # Also set backgrounds directly
+                for col in range(8):
+                    item.setBackground(col, QBrush(bg_color))
+                    item.setForeground(col, QBrush(fg_color))
+            elif pid_status == 'established':
+                # Red for established connections
+                bg_color = QColor(220, 100, 100)  # Medium red for better contrast
+                fg_color = QColor(255, 255, 255)  # White text for readability
+                self.item_highlight_colors[item] = (bg_color, fg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole, "red")
+                for col in range(8):
+                    item.setBackground(col, QBrush(bg_color))
+                    item.setForeground(col, QBrush(fg_color))
+            elif pid_status == 'listening':
+                # Yellow for listening processes
+                bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
+                fg_color = QColor(0, 0, 0)  # Black text on yellow background
+                self.item_highlight_colors[item] = (bg_color, fg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole, "yellow")
+                for col in range(8):
+                    item.setBackground(col, QBrush(bg_color))
+                    item.setForeground(col, QBrush(fg_color))
             elif is_lolbin:
-                # Light blue for LOLBINs (when no network data available)
-                item.setBackground(0, QColor(200, 230, 255))
-                for col in range(1, 8):
-                    item.setBackground(col, QColor(200, 230, 255))
+                # Light blue for LOLBINs (when no network status)
+                bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                fg_color = QColor(255, 255, 255)  # White text for readability
+                self.item_highlight_colors[item] = (bg_color, fg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole, "blue")
+                for col in range(8):
+                    item.setBackground(col, QBrush(bg_color))
+                    item.setForeground(col, QBrush(fg_color))
             
             # Add child processes
             if pid in children_map:
@@ -228,9 +365,92 @@ class ProcessView(QWidget):
         # Expand all items by default so nothing is hidden
         self.tree.expandAll()
         
+        # Mark delegate cache as dirty so it rebuilds
+        delegate = self.tree.itemDelegate()
+        if isinstance(delegate, HighlightDelegate):
+            delegate._cache_dirty = True
+        
+        # Apply highlighting after tree is populated to ensure colors persist
+        # This ensures the colors aren't overridden by tree widget initialization
+        self._apply_highlighting_after_populate()
+        
         # Resize columns
         for i in range(8):
             self.tree.resizeColumnToContents(i)
+    
+    def _apply_highlighting_after_populate(self):
+        """Re-apply highlighting after tree is populated to ensure colors persist."""
+        if not self.process_data or not self.network_data:
+            return
+        
+        network_status_map = self._build_network_status_map()
+        if not network_status_map:
+            return
+        
+        # Iterate through all items in the tree
+        def apply_colors_to_item(item):
+            """Recursively apply colors to item and its children."""
+            # Get PID from first column
+            try:
+                pid_text = item.text(0)
+                pid = int(pid_text)
+            except (ValueError, TypeError):
+                pid = None
+            
+            if pid and pid in network_status_map:
+                pid_status = network_status_map[pid]
+                # Get process name to check if it's a LOLBIN
+                process_name = item.text(1).lower()
+                is_lolbin = process_name in self.LOLBINS
+                
+                # Apply highlighting based on priority
+                # Store highlight colors in our tracking dict for the delegate to use
+                # Using darker backgrounds with white text for better readability
+                if pid_status == 'established' and is_lolbin:
+                    # Blinking red for LOLBINs with established connections
+                    self.blinking_items[pid] = item
+                    item.setData(0, Qt.ItemDataRole.UserRole, "blink-red")
+                    bg_color = QColor(200, 50, 50)  # Darker red for better contrast
+                    fg_color = QColor(255, 255, 255)  # White text for readability
+                    self.item_highlight_colors[item] = (bg_color, fg_color)
+                    for col in range(8):
+                        item.setBackground(col, QBrush(bg_color))
+                        item.setForeground(col, QBrush(fg_color))
+                elif pid_status == 'established':
+                    # Red for established connections
+                    item.setData(0, Qt.ItemDataRole.UserRole, "red")
+                    bg_color = QColor(220, 100, 100)  # Medium red for better contrast
+                    fg_color = QColor(255, 255, 255)  # White text for readability
+                    self.item_highlight_colors[item] = (bg_color, fg_color)
+                    for col in range(8):
+                        item.setBackground(col, QBrush(bg_color))
+                        item.setForeground(col, QBrush(fg_color))
+                elif pid_status == 'listening':
+                    # Yellow for listening processes
+                    item.setData(0, Qt.ItemDataRole.UserRole, "yellow")
+                    bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
+                    fg_color = QColor(0, 0, 0)  # Black text on yellow background
+                    self.item_highlight_colors[item] = (bg_color, fg_color)
+                    for col in range(8):
+                        item.setBackground(col, QBrush(bg_color))
+                        item.setForeground(col, QBrush(fg_color))
+                elif is_lolbin:
+                    # Blue for LOLBINs
+                    item.setData(0, Qt.ItemDataRole.UserRole, "blue")
+                    bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                    fg_color = QColor(255, 255, 255)  # White text for readability
+                    self.item_highlight_colors[item] = (bg_color, fg_color)
+                    for col in range(8):
+                        item.setBackground(col, QBrush(bg_color))
+                        item.setForeground(col, QBrush(fg_color))
+            
+            # Recursively apply to children
+            for i in range(item.childCount()):
+                apply_colors_to_item(item.child(i))
+        
+        # Apply colors to all top-level items
+        for i in range(self.tree.topLevelItemCount()):
+            apply_colors_to_item(self.tree.topLevelItem(i))
     
     def _toggle_blink(self):
         """Toggle the blinking state for items that should blink."""
@@ -239,17 +459,22 @@ class ProcessView(QWidget):
         
         self.blink_state = not self.blink_state
         
-        # Bright red when on, darker red when off
+        # Bright red when on, darker red when off - using darker colors for better contrast
         if self.blink_state:
-            color = QColor(255, 100, 100)  # Bright red
+            bg_color = QColor(220, 30, 30)  # Bright red with good contrast
         else:
-            color = QColor(255, 200, 200)  # Lighter red
+            bg_color = QColor(180, 60, 60)  # Darker red
         
         # Update all blinking items
         for item in self.blinking_items.values():
             if item:  # Check if item still exists
+                # Update the highlight colors dict
+                if item in self.item_highlight_colors:
+                    old_bg, old_fg = self.item_highlight_colors[item]
+                    self.item_highlight_colors[item] = (bg_color, old_fg)
+                # Also update backgrounds directly
                 for col in range(8):
-                    item.setBackground(col, color)
+                    item.setBackground(col, QBrush(bg_color))
     
     def _is_localhost(self, address):
         """Check if an address is localhost (127.0.0.1 or localhost)."""
@@ -269,17 +494,33 @@ class ProcessView(QWidget):
         """Build a mapping of PID to network status (listening or established)."""
         status_map = {}
         
-        if not self.network_data or 'connections' not in self.network_data:
+        if not self.network_data:
+            return status_map
+        
+        if 'connections' not in self.network_data:
             return status_map
         
         connections = self.network_data['connections']
+        if not connections:
+            return status_map
         
         for conn in connections:
             pid = conn.get('pid')
+            # Skip if PID is 'N/A', None, or cannot be converted to int
             if pid == 'N/A' or pid is None:
                 continue
             
-            status = conn.get('status', '').upper()
+            # Convert PID to integer for consistent comparison
+            try:
+                pid = int(pid)
+            except (ValueError, TypeError):
+                continue
+            
+            status = conn.get('status', '')
+            if not status or status == 'N/A':
+                continue
+            
+            status = status.upper()
             
             # Skip highlighting if remote address is localhost
             remote_addr = conn.get('remote_address', '')
@@ -369,11 +610,11 @@ class ProcessView(QWidget):
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
         
-        # Blinking red - LOLBIN with ESTABLISHED
+        # Blinking red - LOLBIN with ESTABLISHED (darker red for better contrast)
         red_box = QLabel()
         red_box.setFixedSize(14, 14)
         red_box.setStyleSheet(
-            "background-color: #ff6464;"
+            "background-color: #c83232;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -384,11 +625,11 @@ class ProcessView(QWidget):
         )
         legend_layout.addWidget(red_label)
         
-        # Red - ESTABLISHED
+        # Red - ESTABLISHED (medium red for better contrast)
         red_box2 = QLabel()
         red_box2.setFixedSize(14, 14)
         red_box2.setStyleSheet(
-            "background-color: #ff8585;"
+            "background-color: #dc6464;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -399,11 +640,11 @@ class ProcessView(QWidget):
         )
         legend_layout.addWidget(red_label2)
         
-        # Yellow - LISTEN
+        # Yellow - LISTEN (darker yellow/orange for better contrast)
         yellow_box = QLabel()
         yellow_box.setFixedSize(14, 14)
         yellow_box.setStyleSheet(
-            "background-color: #f6d96f;"
+            "background-color: #dcb432;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -414,16 +655,16 @@ class ProcessView(QWidget):
         )
         legend_layout.addWidget(yellow_label)
         
-        # Light blue - LOLBIN
+        # Blue - LOLBIN (darker blue for better contrast)
         blue_box = QLabel()
         blue_box.setFixedSize(14, 14)
         blue_box.setStyleSheet(
-            "background-color: #5fc4ff;"
+            "background-color: #508cc8;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
         legend_layout.addWidget(blue_box)
-        blue_label = QLabel("Light Blue: LOLBIN")
+        blue_label = QLabel("Blue: LOLBIN")
         blue_label.setStyleSheet(
             "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
         )
@@ -431,5 +672,3 @@ class ProcessView(QWidget):
         
         legend_layout.addStretch()
         return legend_frame
-
-

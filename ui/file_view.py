@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHBoxLayout, QLineEdit, QLabel
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 
 class FileView(QWidget):
@@ -51,6 +51,8 @@ class FileView(QWidget):
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        # Performance optimizations
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
         layout.addWidget(self.table)
@@ -61,31 +63,43 @@ class FileView(QWidget):
             return
         
         self.file_data = data['files']
-        self.populate_table(self.file_data)
+        # Defer heavy work to make UI responsive
+        QTimer.singleShot(0, lambda: self.populate_table(self.file_data))
     
     def populate_table(self, files):
         """Populate the table with file data."""
-        self.table.setRowCount(len(files))
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         
-        for row, file_info in enumerate(files):
-            path_item = QTableWidgetItem(file_info['path'])
-            if len(file_info['path']) > 100:
-                path_item.setToolTip(file_info['path'])
-            self.table.setItem(row, 0, path_item)
+        try:
+            self.table.setRowCount(len(files))
             
-            self.table.setItem(row, 1, QTableWidgetItem(file_info['name']))
-            self.table.setItem(row, 2, QTableWidgetItem(str(file_info['size'])))
-            self.table.setItem(row, 3, QTableWidgetItem(file_info['modified']))
-            self.table.setItem(row, 4, QTableWidgetItem(file_info['created']))
+            for row, file_info in enumerate(files):
+                path_item = QTableWidgetItem(file_info['path'])
+                if len(file_info['path']) > 100:
+                    path_item.setToolTip(file_info['path'])
+                self.table.setItem(row, 0, path_item)
+                
+                self.table.setItem(row, 1, QTableWidgetItem(file_info['name']))
+                self.table.setItem(row, 2, QTableWidgetItem(str(file_info['size'])))
+                self.table.setItem(row, 3, QTableWidgetItem(file_info['modified']))
+                self.table.setItem(row, 4, QTableWidgetItem(file_info['created']))
+                
+                # SHA256 hash column
+                sha256 = file_info.get('sha256', 'N/A')
+                sha256_item = QTableWidgetItem(sha256)
+                if len(sha256) > 64:
+                    sha256_item.setToolTip(sha256)
+                self.table.setItem(row, 5, sha256_item)
             
-            # SHA256 hash column
-            sha256 = file_info.get('sha256', 'N/A')
-            sha256_item = QTableWidgetItem(sha256)
-            if len(sha256) > 64:
-                sha256_item.setToolTip(sha256)
-            self.table.setItem(row, 5, sha256_item)
-        
-        self.table.resizeColumnsToContents()
+            # Resize columns only once after all rows are populated
+            self.table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(was_sorting)
     
     def filter_files(self, text):
         """Filter files based on search text."""

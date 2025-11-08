@@ -141,6 +141,16 @@ class MainWindow(QMainWindow):
             "firewall": 9
         }
         
+        # Reverse mapping: tab index -> list of collector names that map to it
+        self.tab_to_collectors = {}
+        for collector_name, tab_index in self.collector_to_tab.items():
+            if tab_index not in self.tab_to_collectors:
+                self.tab_to_collectors[tab_index] = []
+            self.tab_to_collectors[tab_index].append(collector_name)
+        
+        # Track which collectors have finished
+        self.finished_collectors = set()
+        
         # Create green icon for completed tabs
         self.green_icon = self.create_green_icon()
         
@@ -148,13 +158,24 @@ class MainWindow(QMainWindow):
         self.red_icon_bright = self.create_red_icon(True)
         self.red_icon_dark = self.create_red_icon(False)
         
-        # Blinking timer for red icons on tabs
+        # Blinking timer for red icons on tabs (slower frequency for better performance)
         self.blink_timer = QTimer()
         self.blink_timer.timeout.connect(self.blink_red_tabs)
         self.is_red_bright = True
         
         # Track which tabs are still processing
         self.processing_tabs = set()
+        
+        # Batching for incremental updates (DLL and binary)
+        self.dll_update_queue = []
+        self.binary_update_queue = []
+        self.dll_batch_timer = QTimer()
+        self.dll_batch_timer.setSingleShot(True)
+        self.dll_batch_timer.timeout.connect(self._process_dll_batch)
+        self.binary_batch_timer = QTimer()
+        self.binary_batch_timer.setSingleShot(True)
+        self.binary_batch_timer.timeout.connect(self._process_binary_batch)
+        self.batch_delay_ms = 100  # Batch updates every 100ms for better performance
         
         self.init_ui()
     
@@ -269,6 +290,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.firewall_view, "Firewall")
         self.tabs.addTab(self.hayabusa_view, "Hayabusa")
         
+        # Connect tab change signal to defer heavy work
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        
+        # Store pending updates for each view
+        self.pending_updates = {}
+        
         layout.addWidget(self.tabs)
         
         # Status bar with collect button and progress bar
@@ -288,119 +315,37 @@ class MainWindow(QMainWindow):
         
         self.statusBar.showMessage("Ready")
     
-    def create_green_icon(self):
-        """Create a small green circle icon for tab headers."""
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor(0, 200, 0))  # Green color
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(2, 2, 12, 12)  # Draw a small circle
-        painter.end()
-        return QIcon(pixmap)
+    def on_tab_changed(self, index):
+        """Handle tab change - defer heavy work to make switching instant."""
+        # Process any pending updates for the newly visible tab
+        # Use QTimer.singleShot to defer work after tab switch completes
+        QTimer.singleShot(0, lambda: self._process_pending_updates(index))
     
-    def create_red_icon(self, bright=True):
-        """Create a small red circle icon for tab headers (bright or dark for blinking)."""
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if bright:
-            painter.setBrush(QColor(255, 0, 0))  # Bright red
-        else:
-            painter.setBrush(QColor(128, 0, 0))  # Dark red
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(2, 2, 12, 12)  # Draw a small circle
-        painter.end()
-        return QIcon(pixmap)
+    def _process_pending_updates(self, tab_index):
+        """Process any pending updates for a specific tab."""
+        # Map tab index to view
+        views = [
+            self.process_view,
+            self.network_view,
+            self.service_view,
+            self.file_view,
+            self.system_view,
+            self.persistence_view,
+            self.dll_view,
+            self.login_view,
+            self.app_view,
+            self.firewall_view,
+            self.hayabusa_view
+        ]
+        
+        if 0 <= tab_index < len(views):
+            view = views[tab_index]
+            # Check if there are pending updates for this view
+            if hasattr(view, 'process_pending_updates'):
+                view.process_pending_updates()
     
-    def blink_red_tabs(self):
-        """Toggle red icons on tabs that are still processing."""
-        self.is_red_bright = not self.is_red_bright
-        current_icon = self.red_icon_bright if self.is_red_bright else self.red_icon_dark
-        
-        # Update all tabs that are still processing
-        for tab_index in self.processing_tabs:
-            self.tabs.setTabIcon(tab_index, current_icon)
-    
-    def collect_all_data(self):
-        """Collect data from all collectors in parallel using multiple threads."""
-        # Prevent multiple simultaneous collection runs
-        if self.collect_all_btn.isEnabled() == False:
-            # Check if threads are still running
-            running_threads = [t for t in self.collection_threads.values() if t.isRunning()]
-            if running_threads:
-                return  # Collection already in progress
-        
-        self.collect_all_btn.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, self.total_collectors)
-        self.progress_bar.setValue(0)
-        self.statusBar.showMessage("Collecting data from all collectors in parallel...")
-        
-        # Wait for any existing threads to finish or terminate them
-        self._cleanup_existing_threads()
-        
-        # Initialize all tabs as processing and set red blinking icons
-        collector_tab_indices = set(self.collector_to_tab.values())
-        self.processing_tabs = set(collector_tab_indices)
-        self.is_red_bright = True
-        for tab_index in range(self.tabs.count()):
-            if tab_index in collector_tab_indices:
-                self.tabs.setTabIcon(tab_index, self.red_icon_bright)
-            else:
-                self.tabs.setTabIcon(tab_index, QIcon())
-        
-        # Start blinking timer
-        self.blink_timer.start(500)  # Blink every 500ms
-        
-        # Reset thread-safe counter
-        with QMutexLocker(self.progress_mutex):
-            self.completed_count = 0
-        
-        # Clear DLL view before starting new collection (for incremental updates)
-        self.dll_view.clear_data()
-        
-        # Clear binary table before starting new collection (for incremental updates)
-        self.app_view.clear_binary_data()
-        
-        # Clear previous thread references
-        self.collection_threads.clear()
-        
-        # Start all collection threads in parallel - each gets its own collector instance
-        for name, collector_template in self.collectors.items():
-            # Create a new collector instance for each thread to ensure independence
-            # This ensures each thread has its own collector state
-            collector_instance = self._create_collector_instance(name, collector_template)
-            
-            # Create and start thread for this collector
-            thread = CollectionThread(collector_instance, name)
-            thread.finished.connect(self.on_collection_finished)
-            thread.error.connect(self.on_collection_error)
-            # Connect incremental updates for DLL collector
-            if name == "dlls":
-                thread.incremental_update.connect(self.on_dll_incremental_update)
-            # Connect incremental updates for binaries collector
-            elif name == "binaries":
-                thread.incremental_update.connect(self.on_binary_incremental_update)
-            self.collection_threads[name] = thread
-            thread.start()  # All threads start immediately and run in parallel
-    
-    def on_collection_finished(self, data, collector_name):
-        """Handle successful data collection (called from worker thread)."""
-        # Thread-safe progress update
-        with QMutexLocker(self.progress_mutex):
-            self.completed_count += 1
-            current_count = self.completed_count
-        
-        # Update progress bar (this is thread-safe, Qt handles cross-thread calls)
-        self.progress_bar.setValue(current_count)
-        
-        # Store collected data
-        self.collected_data[collector_name] = data
-        
-        # Update the appropriate view
+    def _update_view_data(self, collector_name, data):
+        """Update view data - deferred to avoid blocking UI."""
         if collector_name == "processes":
             self.process_view.update_data(data)
             # If network data is already collected, pass it for correlation
@@ -457,17 +402,162 @@ class MainWindow(QMainWindow):
                 self.process_view.update_network_data(data)
                 # Also pass process data to network view for create_time correlation
                 self.network_view.update_process_data(self.collected_data["processes"])
+    
+    def create_green_icon(self):
+        """Create a small green circle icon for tab headers."""
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(0, 200, 0))  # Green color
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, 12, 12)  # Draw a small circle
+        painter.end()
+        return QIcon(pixmap)
+    
+    def create_red_icon(self, bright=True):
+        """Create a small red circle icon for tab headers (bright or dark for blinking)."""
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if bright:
+            painter.setBrush(QColor(255, 0, 0))  # Bright red
+        else:
+            painter.setBrush(QColor(128, 0, 0))  # Dark red
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, 12, 12)  # Draw a small circle
+        painter.end()
+        return QIcon(pixmap)
+    
+    def blink_red_tabs(self):
+        """Toggle red icons on tabs that are still processing."""
+        self.is_red_bright = not self.is_red_bright
+        current_icon = self.red_icon_bright if self.is_red_bright else self.red_icon_dark
+        
+        # Update all tabs that are still processing
+        for tab_index in self.processing_tabs:
+            self.tabs.setTabIcon(tab_index, current_icon)
+    
+    def collect_all_data(self):
+        """Collect data from all collectors in parallel using multiple threads."""
+        # Prevent multiple simultaneous collection runs
+        if self.collect_all_btn.isEnabled() == False:
+            # Check if threads are still running
+            running_threads = [t for t in self.collection_threads.values() if t.isRunning()]
+            if running_threads:
+                return  # Collection already in progress
+        
+        self.collect_all_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, self.total_collectors)
+        self.progress_bar.setValue(0)
+        self.statusBar.showMessage("Collecting data from all collectors in parallel...")
+        
+        # Wait for any existing threads to finish or terminate them
+        self._cleanup_existing_threads()
+        
+        # Reset finished collectors tracking
+        self.finished_collectors.clear()
+        
+        # Initialize all tabs as processing and set red blinking icons
+        collector_tab_indices = set(self.collector_to_tab.values())
+        self.processing_tabs = set(collector_tab_indices)
+        self.is_red_bright = True
+        for tab_index in range(self.tabs.count()):
+            if tab_index in collector_tab_indices:
+                self.tabs.setTabIcon(tab_index, self.red_icon_bright)
+            else:
+                self.tabs.setTabIcon(tab_index, QIcon())
+        
+        # Start blinking timer (slower frequency for better performance)
+        self.blink_timer.start(1000)  # Blink every 1000ms (1 second)
+        
+        # Reset thread-safe counter
+        with QMutexLocker(self.progress_mutex):
+            self.completed_count = 0
+        
+        # Clear DLL view before starting new collection (for incremental updates)
+        self.dll_view.clear_data()
+        
+        # Clear binary table before starting new collection (for incremental updates)
+        self.app_view.clear_binary_data()
+        
+        # Clear and stop batch timers
+        self.dll_update_queue.clear()
+        self.binary_update_queue.clear()
+        self.dll_batch_timer.stop()
+        self.binary_batch_timer.stop()
+        
+        # Clear previous thread references
+        self.collection_threads.clear()
+        
+        # Start all collection threads in parallel - each gets its own collector instance
+        for name, collector_template in self.collectors.items():
+            # Create a new collector instance for each thread to ensure independence
+            # This ensures each thread has its own collector state
+            collector_instance = self._create_collector_instance(name, collector_template)
+            
+            # Create and start thread for this collector
+            thread = CollectionThread(collector_instance, name)
+            thread.finished.connect(self.on_collection_finished)
+            thread.error.connect(self.on_collection_error)
+            # Connect incremental updates for DLL collector
+            if name == "dlls":
+                thread.incremental_update.connect(self.on_dll_incremental_update)
+            # Connect incremental updates for binaries collector
+            elif name == "binaries":
+                thread.incremental_update.connect(self.on_binary_incremental_update)
+            self.collection_threads[name] = thread
+            thread.start()  # All threads start immediately and run in parallel
+    
+    def on_collection_finished(self, data, collector_name):
+        """Handle successful data collection (called from worker thread)."""
+        # Thread-safe progress update
+        with QMutexLocker(self.progress_mutex):
+            self.completed_count += 1
+            current_count = self.completed_count
+        
+        # Update progress bar (this is thread-safe, Qt handles cross-thread calls)
+        self.progress_bar.setValue(current_count)
+        
+        # Store collected data
+        self.collected_data[collector_name] = data
+        
+        # Defer all view updates to make UI instantly responsive
+        # Use QTimer.singleShot to defer work after current event processing
+        # This ensures tab switching is instant and smooth
+        QTimer.singleShot(0, lambda: self._update_view_data(collector_name, data))
+        
+        # Mark this collector as finished
+        self.finished_collectors.add(collector_name)
+        
+        # Check if all collectors for this tab have finished
         if collector_name in self.collector_to_tab:
             tab_index = self.collector_to_tab[collector_name]
-            self.tabs.setTabIcon(tab_index, self.green_icon)
-            # Remove from processing tabs set
-            self.processing_tabs.discard(tab_index)
+            # Get all collectors that map to this tab
+            collectors_for_tab = self.tab_to_collectors.get(tab_index, [])
+            # Check if all collectors for this tab have finished
+            all_finished = all(c in self.finished_collectors for c in collectors_for_tab)
+            
+            if all_finished:
+                # All collectors for this tab are done, set green icon
+                self.tabs.setTabIcon(tab_index, self.green_icon)
+                # Remove from processing tabs set
+                self.processing_tabs.discard(tab_index)
+            # If not all finished, keep the tab in processing_tabs (red blinking will continue)
         
         # Check if all collections are done (thread-safe check)
         with QMutexLocker(self.progress_mutex):
             all_done = (self.completed_count >= self.total_collectors)
         
         if all_done:
+            # Process any remaining batched updates before finishing
+            if self.dll_update_queue:
+                self._process_dll_batch()
+            if self.binary_update_queue:
+                self._process_binary_batch()
+            
             self.progress_bar.setVisible(False)
             self.collect_all_btn.setEnabled(True)
             self.statusBar.showMessage("Data collection complete")
@@ -478,16 +568,56 @@ class MainWindow(QMainWindow):
             self._cleanup_finished_threads()
     
     def on_dll_incremental_update(self, dll_info, collector_name):
-        """Handle incremental DLL updates (called from worker thread)."""
-        # Update DLL view incrementally
+        """Handle incremental DLL updates (called from worker thread) - batched for performance."""
+        # Queue the update instead of applying immediately
         if collector_name == "dlls":
+            self.dll_update_queue.append(dll_info)
+            # Start/restart batch timer if not already running
+            if not self.dll_batch_timer.isActive():
+                self.dll_batch_timer.start(self.batch_delay_ms)
+    
+    def _process_dll_batch(self):
+        """Process batched DLL updates for better performance."""
+        if not self.dll_update_queue:
+            return
+        
+        # Get all queued updates
+        batch = self.dll_update_queue[:]
+        self.dll_update_queue.clear()
+        
+        # Apply all updates at once (view handles batching internally)
+        for dll_info in batch:
             self.dll_view.add_dll_incremental(dll_info)
+        
+        # If there are more queued updates, schedule another batch
+        if self.dll_update_queue:
+            self.dll_batch_timer.start(self.batch_delay_ms)
     
     def on_binary_incremental_update(self, binary_info, collector_name):
-        """Handle incremental binary updates (called from worker thread)."""
-        # Update binary view incrementally
+        """Handle incremental binary updates (called from worker thread) - batched for performance."""
+        # Queue the update instead of applying immediately
         if collector_name == "binaries":
+            self.binary_update_queue.append(binary_info)
+            # Start/restart batch timer if not already running
+            if not self.binary_batch_timer.isActive():
+                self.binary_batch_timer.start(self.batch_delay_ms)
+    
+    def _process_binary_batch(self):
+        """Process batched binary updates for better performance."""
+        if not self.binary_update_queue:
+            return
+        
+        # Get all queued updates
+        batch = self.binary_update_queue[:]
+        self.binary_update_queue.clear()
+        
+        # Apply all updates at once (view handles batching internally)
+        for binary_info in batch:
             self.app_view.add_binary_incremental(binary_info)
+        
+        # If there are more queued updates, schedule another batch
+        if self.binary_update_queue:
+            self.binary_batch_timer.start(self.batch_delay_ms)
     
     def on_collection_error(self, error_message, collector_name):
         """Handle collection errors (called from worker thread)."""
@@ -515,18 +645,35 @@ class MainWindow(QMainWindow):
             }
             self.login_view.update_data(error_data)
         
-        # Set green icon on the tab header even if there was an error (data was attempted)
+        # Mark this collector as finished (even if there was an error)
+        self.finished_collectors.add(collector_name)
+        
+        # Check if all collectors for this tab have finished
         if collector_name in self.collector_to_tab:
             tab_index = self.collector_to_tab[collector_name]
-            self.tabs.setTabIcon(tab_index, self.green_icon)
-            # Remove from processing tabs set
-            self.processing_tabs.discard(tab_index)
+            # Get all collectors that map to this tab
+            collectors_for_tab = self.tab_to_collectors.get(tab_index, [])
+            # Check if all collectors for this tab have finished
+            all_finished = all(c in self.finished_collectors for c in collectors_for_tab)
+            
+            if all_finished:
+                # All collectors for this tab are done, set green icon
+                self.tabs.setTabIcon(tab_index, self.green_icon)
+                # Remove from processing tabs set
+                self.processing_tabs.discard(tab_index)
+            # If not all finished, keep the tab in processing_tabs (red blinking will continue)
         
         # Check if all collections are done (thread-safe check)
         with QMutexLocker(self.progress_mutex):
             all_done = (self.completed_count >= self.total_collectors)
         
         if all_done:
+            # Process any remaining batched updates before finishing
+            if self.dll_update_queue:
+                self._process_dll_batch()
+            if self.binary_update_queue:
+                self._process_binary_batch()
+            
             self.progress_bar.setVisible(False)
             self.collect_all_btn.setEnabled(True)
             self.statusBar.showMessage("Data collection complete (with errors)")

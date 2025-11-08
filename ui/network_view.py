@@ -4,10 +4,48 @@ Network view widget for displaying network connection information.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QHBoxLayout, QLineEdit, QLabel, QGroupBox, QGridLayout, QFrame
+    QPushButton, QHBoxLayout, QLineEdit, QLabel, QGroupBox, QGridLayout, QFrame,
+    QStyledItemDelegate
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer, QModelIndex
+from PySide6.QtGui import QColor, QBrush, QPainter
+
+
+class TableHighlightDelegate(QStyledItemDelegate):
+    """Custom delegate to paint backgrounds that won't be overridden by stylesheet."""
+    
+    def __init__(self, table_view):
+        super().__init__()
+        self.table_view = table_view
+    
+    def paint(self, painter, option, index):
+        """Paint the item with custom background if it has one."""
+        # Get row and column
+        row = index.row()
+        col = index.column()
+        
+        # Check if this cell has a highlight color stored in the item's data
+        item = self.table_view.item(row, col)
+        if item:
+            # Check if item has background/foreground set
+            bg_brush = item.background()
+            fg_brush = item.foreground()
+            
+            # If background is not default (has a color), paint it
+            if bg_brush.style() != 0:  # Not NoBrush
+                bg_color = bg_brush.color()
+                if bg_color.isValid() and bg_color != QColor(0, 0, 0, 0):  # Not transparent
+                    # Paint background
+                    painter.fillRect(option.rect, bg_color)
+                    
+                    # Set foreground color if specified
+                    if fg_brush.style() != 0:  # Not NoBrush
+                        fg_color = fg_brush.color()
+                        if fg_color.isValid():
+                            option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+        
+        # Let default delegate handle text rendering
+        super().paint(painter, option, index)
 
 
 class NetworkView(QWidget):
@@ -107,6 +145,10 @@ class NetworkView(QWidget):
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        # Set custom delegate to paint backgrounds
+        self.table.setItemDelegate(TableHighlightDelegate(self.table))
+        # Performance optimizations
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
         # Enable tooltips and connect to itemEntered signal for hover tooltips
@@ -130,16 +172,16 @@ class NetworkView(QWidget):
             self.stats_labels['packets_sent'].setText(f"Packets Sent: {stats.get('packets_sent', 0):,}")
             self.stats_labels['packets_recv'].setText(f"Packets Received: {stats.get('packets_recv', 0):,}")
         
-        # Update connections table
+        # Update connections table - defer heavy work
         if 'connections' in data:
-            self.populate_table(data['connections'])
+            QTimer.singleShot(0, lambda: self.populate_table(data['connections']))
     
     def update_process_data(self, process_data):
         """Update process data for correlating PID to create_time."""
         self.process_data = process_data
-        # Refresh the table if network data is already loaded
+        # Refresh the table if network data is already loaded - defer heavy work
         if self.network_data and 'connections' in self.network_data:
-            self.populate_table(self.network_data['connections'])
+            QTimer.singleShot(0, lambda: self.populate_table(self.network_data['connections']))
     
     def _is_localhost(self, address):
         """Check if an address is localhost (127.0.0.1 or localhost)."""
@@ -157,69 +199,96 @@ class NetworkView(QWidget):
     
     def populate_table(self, connections):
         """Populate the table with connection data."""
-        # Clear blinking rows before repopulating
-        self.blinking_rows.clear()
-        self.blink_state = False
+        # Disable sorting and updates for better performance during bulk operations
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         
-        self.table.setRowCount(len(connections))
-        
-        # Build PID to create_time mapping if process data is available
-        pid_to_create_time = {}
-        if self.process_data and 'processes' in self.process_data:
-            for proc in self.process_data['processes']:
-                pid_to_create_time[proc['pid']] = proc.get('create_time', 'N/A')
-        
-        for row, conn in enumerate(connections):
-            self.table.setItem(row, 0, QTableWidgetItem(str(conn['pid'])))
-            self.table.setItem(row, 1, QTableWidgetItem(conn['process_name']))
-            self.table.setItem(row, 2, QTableWidgetItem(conn['local_address']))
-            self.table.setItem(row, 3, QTableWidgetItem(conn['remote_address']))
-            self.table.setItem(row, 4, QTableWidgetItem(conn['status']))
-            self.table.setItem(row, 5, QTableWidgetItem(conn['family']))
+        try:
+            # Clear blinking rows before repopulating
+            self.blinking_rows.clear()
+            self.blink_state = False
             
-            # Get process creation time from process data
-            pid = conn.get('pid')
-            create_time = pid_to_create_time.get(pid, 'N/A') if pid != 'N/A' and pid is not None else 'N/A'
-            self.table.setItem(row, 6, QTableWidgetItem(create_time))
+            self.table.setRowCount(len(connections))
             
-            # Check if remote address is localhost
-            remote_addr = conn.get('remote_address', '')
-            is_localhost = self._is_localhost(remote_addr)
+            # Build PID to create_time mapping if process data is available
+            pid_to_create_time = {}
+            if self.process_data and 'processes' in self.process_data:
+                for proc in self.process_data['processes']:
+                    pid_to_create_time[proc['pid']] = proc.get('create_time', 'N/A')
             
-            # Skip highlighting if remote address is localhost
-            if is_localhost:
-                continue
+            for row, conn in enumerate(connections):
+                self.table.setItem(row, 0, QTableWidgetItem(str(conn['pid'])))
+                self.table.setItem(row, 1, QTableWidgetItem(conn['process_name']))
+                self.table.setItem(row, 2, QTableWidgetItem(conn['local_address']))
+                self.table.setItem(row, 3, QTableWidgetItem(conn['remote_address']))
+                self.table.setItem(row, 4, QTableWidgetItem(conn['status']))
+                self.table.setItem(row, 5, QTableWidgetItem(conn['family']))
+                
+                # Get process creation time from process data
+                pid = conn.get('pid')
+                create_time = pid_to_create_time.get(pid, 'N/A') if pid != 'N/A' and pid is not None else 'N/A'
+                self.table.setItem(row, 6, QTableWidgetItem(create_time))
+                
+                # Check if remote address is localhost
+                remote_addr = conn.get('remote_address', '')
+                is_localhost = self._is_localhost(remote_addr)
+                
+                # Skip highlighting if remote address is localhost
+                if is_localhost:
+                    continue
+                
+                # Apply color coding based on network status and LOLBIN
+                # Priority: ESTABLISHED + LOLBIN (blinking red) > ESTABLISHED (red) > LISTEN (yellow) > LOLBIN (light blue)
+                process_name_lower = conn.get('process_name', '').lower()
+                is_lolbin = process_name_lower in self.LOLBINS
+                status = conn.get('status', '').upper()
+                
+                if status == 'ESTABLISHED' and is_lolbin:
+                    # Blinking red for LOLBINs with established connections (highest priority)
+                    self.blinking_rows[row] = conn
+                    # Start with red background - darker for better contrast
+                    bg_color = QColor(200, 50, 50)  # Darker red for better contrast
+                    fg_color = QColor(255, 255, 255)  # White text for readability
+                    for col in range(7):
+                        item = self.table.item(row, col)
+                        if item:
+                            item.setBackground(QBrush(bg_color))
+                            item.setForeground(QBrush(fg_color))
+                elif status == 'ESTABLISHED':
+                    # Red for established connections
+                    bg_color = QColor(220, 100, 100)  # Medium red for better contrast
+                    fg_color = QColor(255, 255, 255)  # White text for readability
+                    for col in range(7):
+                        item = self.table.item(row, col)
+                        if item:
+                            item.setBackground(QBrush(bg_color))
+                            item.setForeground(QBrush(fg_color))
+                elif status == 'LISTEN':
+                    # Yellow for listening processes
+                    bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
+                    fg_color = QColor(0, 0, 0)  # Black text on yellow background
+                    for col in range(7):
+                        item = self.table.item(row, col)
+                        if item:
+                            item.setBackground(QBrush(bg_color))
+                            item.setForeground(QBrush(fg_color))
+                elif is_lolbin:
+                    # Blue for LOLBINs (when no network status)
+                    bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                    fg_color = QColor(255, 255, 255)  # White text for readability
+                    for col in range(7):
+                        item = self.table.item(row, col)
+                        if item:
+                            item.setBackground(QBrush(bg_color))
+                            item.setForeground(QBrush(fg_color))
             
-            # Apply color coding based on network status and LOLBIN
-            # Priority: ESTABLISHED + LOLBIN (blinking red) > ESTABLISHED (red) > LISTEN (yellow) > LOLBIN (light blue)
-            process_name_lower = conn.get('process_name', '').lower()
-            is_lolbin = process_name_lower in self.LOLBINS
-            status = conn.get('status', '').upper()
-            
-            if status == 'ESTABLISHED' and is_lolbin:
-                # Blinking red for LOLBINs with established connections (highest priority)
-                self.blinking_rows[row] = conn
-                # Start with red background
-                color = QColor(255, 150, 150)
-                for col in range(7):
-                    self.table.item(row, col).setBackground(color)
-            elif status == 'ESTABLISHED':
-                # Red for established connections
-                color = QColor(255, 200, 200)
-                for col in range(7):
-                    self.table.item(row, col).setBackground(color)
-            elif status == 'LISTEN':
-                # Yellow for listening processes
-                color = QColor(255, 255, 200)
-                for col in range(7):
-                    self.table.item(row, col).setBackground(color)
-            elif is_lolbin:
-                # Light blue for LOLBINs (when no network status)
-                color = QColor(200, 230, 255)
-                for col in range(7):
-                    self.table.item(row, col).setBackground(color)
-        
-        self.table.resizeColumnsToContents()
+            # Resize columns only once after all rows are populated
+            self.table.resizeColumnsToContents()
+        finally:
+            # Re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(was_sorting)
     
     def _toggle_blink(self):
         """Toggle the blinking state for rows that should blink."""
@@ -228,11 +297,12 @@ class NetworkView(QWidget):
         
         self.blink_state = not self.blink_state
         
-        # Bright red when on, darker red when off
+        # Bright red when on, darker red when off - using darker colors for better contrast
         if self.blink_state:
-            color = QColor(255, 100, 100)  # Bright red
+            bg_color = QColor(220, 30, 30)  # Bright red with good contrast
         else:
-            color = QColor(255, 200, 200)  # Lighter red
+            bg_color = QColor(180, 60, 60)  # Darker red
+        fg_color = QColor(255, 255, 255)  # White text for readability
         
         # Update all blinking rows
         for row in self.blinking_rows.keys():
@@ -240,7 +310,8 @@ class NetworkView(QWidget):
                 for col in range(7):
                     item = self.table.item(row, col)
                     if item:  # Check if item exists
-                        item.setBackground(color)
+                        item.setBackground(QBrush(bg_color))
+                        item.setForeground(QBrush(fg_color))
     
     def filter_connections(self, text):
         """Filter connections based on search text."""
@@ -414,11 +485,11 @@ class NetworkView(QWidget):
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
         
-        # Blinking red - LOLBIN with ESTABLISHED
+        # Blinking red - LOLBIN with ESTABLISHED (darker red for better contrast)
         red_box = QLabel()
         red_box.setFixedSize(14, 14)
         red_box.setStyleSheet(
-            "background-color: #ff6464;"
+            "background-color: #c83232;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -429,11 +500,11 @@ class NetworkView(QWidget):
         )
         legend_layout.addWidget(red_label)
         
-        # Red - ESTABLISHED
+        # Red - ESTABLISHED (medium red for better contrast)
         red_box2 = QLabel()
         red_box2.setFixedSize(14, 14)
         red_box2.setStyleSheet(
-            "background-color: #ff8585;"
+            "background-color: #dc6464;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -444,11 +515,11 @@ class NetworkView(QWidget):
         )
         legend_layout.addWidget(red_label2)
         
-        # Yellow - LISTEN
+        # Yellow - LISTEN (darker yellow/orange for better contrast)
         yellow_box = QLabel()
         yellow_box.setFixedSize(14, 14)
         yellow_box.setStyleSheet(
-            "background-color: #f6d96f;"
+            "background-color: #dcb432;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
@@ -459,16 +530,16 @@ class NetworkView(QWidget):
         )
         legend_layout.addWidget(yellow_label)
         
-        # Light blue - LOLBIN
+        # Blue - LOLBIN (darker blue for better contrast)
         blue_box = QLabel()
         blue_box.setFixedSize(14, 14)
         blue_box.setStyleSheet(
-            "background-color: #5fc4ff;"
+            "background-color: #508cc8;"
             " border: 1px solid #29b6d3;"
             " border-radius: 3px;"
         )
         legend_layout.addWidget(blue_box)
-        blue_label = QLabel("Light Blue: LOLBIN")
+        blue_label = QLabel("Blue: LOLBIN")
         blue_label.setStyleSheet(
             "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
         )
