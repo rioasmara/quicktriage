@@ -34,7 +34,8 @@ class SystemCollector(BaseCollector):
                     ['wmic', 'diskdrive', 'get', 'serialnumber'],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
                 )
                 if result.returncode == 0:
                     lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip() and 'SerialNumber' not in line]
@@ -74,7 +75,8 @@ class SystemCollector(BaseCollector):
                     ['wmic', 'baseboard', 'get', 'serialnumber'],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
                 )
                 if result.returncode == 0:
                     lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip() and 'SerialNumber' not in line]
@@ -86,7 +88,8 @@ class SystemCollector(BaseCollector):
                     ['wmic', 'csproduct', 'get', 'uuid'],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
                 )
                 if result.returncode == 0:
                     lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip() and 'UUID' not in line]

@@ -77,6 +77,8 @@ class SystemView(QWidget):
         ])
         self.disk_table.setSortingEnabled(True)
         self.disk_table.setAlternatingRowColors(True)
+        # Set row height for better readability when editing
+        self.disk_table.verticalHeader().setDefaultSectionSize(52)
         disk_layout = QVBoxLayout()
         disk_layout.addWidget(self.disk_table)
         disk_group.setLayout(disk_layout)

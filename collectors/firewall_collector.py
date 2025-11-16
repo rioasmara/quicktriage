@@ -45,14 +45,9 @@ class FirewallCollector(BaseCollector):
                 rules = self._collect_via_netsh()
         except Exception as e:
             # If COM API fails, try netsh
-            print(f"[FirewallCollector] COM API exception: {e}, trying netsh fallback...", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
             try:
                 rules = self._collect_via_netsh()
-                print(f"[FirewallCollector] Netsh fallback returned {len(rules)} rules", file=sys.stderr)
             except Exception as e2:
-                print(f"[FirewallCollector] Both methods failed: {e}, {e2}", file=sys.stderr)
                 return {
                     'timestamp': datetime.now().isoformat(),
                     'rules': [],
@@ -60,7 +55,6 @@ class FirewallCollector(BaseCollector):
                     'error': f'Failed to collect firewall rules: {str(e)}. Fallback error: {str(e2)}'
                 }
         
-        print(f"[FirewallCollector] Returning {len(rules)} rules total", file=sys.stderr)
         return {
             'timestamp': datetime.now().isoformat(),
             'rules': rules,
@@ -313,8 +307,6 @@ class FirewallCollector(BaseCollector):
                 )
                 
                 if result.returncode != 0:
-                    import sys
-                    print(f"[FirewallCollector] Netsh command failed: {result.stderr}", file=sys.stderr)
                     return rules
             
             # Parse the output

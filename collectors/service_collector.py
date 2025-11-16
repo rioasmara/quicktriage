@@ -12,8 +12,6 @@ class ServiceCollector(BaseCollector):
     
     def collect(self):
         """Collect Windows service information."""
-        import sys
-        print(f"[ServiceCollector] Starting service collection...", file=sys.stderr)
         services = []
         service_manager = None
         win32service = None
@@ -22,11 +20,9 @@ class ServiceCollector(BaseCollector):
             import win32serviceutil
             import win32service
             import win32con
-            print(f"[ServiceCollector] Successfully imported win32service modules", file=sys.stderr)
             
             # Open Service Control Manager with all necessary access rights
             # SC_MANAGER_ENUMERATE_SERVICE and SC_MANAGER_CONNECT are in win32service module
-            print(f"[ServiceCollector] Opening Service Control Manager...", file=sys.stderr)
             try:
                 service_manager = win32service.OpenSCManager(
                     None, 
@@ -34,15 +30,12 @@ class ServiceCollector(BaseCollector):
                     win32service.SC_MANAGER_ENUMERATE_SERVICE | 
                     win32service.SC_MANAGER_CONNECT
                 )
-                print(f"[ServiceCollector] Service Control Manager opened successfully", file=sys.stderr)
             except Exception as e:
-                print(f"[ServiceCollector] ERROR opening Service Control Manager: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
                 raise
             
             if service_manager is None:
-                print(f"[ServiceCollector] Service Control Manager is None", file=sys.stderr)
                 return {
                     'timestamp': datetime.now().isoformat(),
                     'services': [],
@@ -53,11 +46,8 @@ class ServiceCollector(BaseCollector):
             # Enumerate all services (both active and inactive)
             # EnumServicesStatus returns all services by default
             try:
-                print(f"[ServiceCollector] Enumerating services...", file=sys.stderr)
                 status = win32service.EnumServicesStatus(service_manager)
-                print(f"[ServiceCollector] Found {len(status) if status else 0} services", file=sys.stderr)
             except Exception as e:
-                print(f"[ServiceCollector] ERROR enumerating services: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
                 return {
@@ -68,7 +58,6 @@ class ServiceCollector(BaseCollector):
                 }
             
             if not status:
-                print(f"[ServiceCollector] WARNING: No services found or status is empty", file=sys.stderr)
                 return {
                     'timestamp': datetime.now().isoformat(),
                     'services': [],
@@ -76,7 +65,6 @@ class ServiceCollector(BaseCollector):
                     'error': 'No services found or access denied.'
                 }
             
-            print(f"[ServiceCollector] Processing {len(status)} services...", file=sys.stderr)
             for short_name, display_name, service_status in status:
                 service_handle = None
                 try:
@@ -86,10 +74,6 @@ class ServiceCollector(BaseCollector):
                         win32service.SERVICE_QUERY_CONFIG
                     )
                     service_config = win32service.QueryServiceConfig(service_handle)
-                    
-                    # Debug: print service_config structure for first few services
-                    if len(services) < 3:
-                        print(f"[ServiceCollector] service_config for {short_name}: type={type(service_config)}, len={len(service_config) if hasattr(service_config, '__len__') else 'N/A'}, value={service_config[:3] if isinstance(service_config, tuple) else service_config}", file=sys.stderr)
                     
                     # Determine service status
                     state = service_status[1]
@@ -147,12 +131,9 @@ class ServiceCollector(BaseCollector):
                             win32service.CloseServiceHandle(service_handle)
                         except:
                             pass
-            
-            print(f"[ServiceCollector] Successfully collected {len(services)} services", file=sys.stderr)
                         
         except ImportError as e:
             # pywin32 is not available - return empty list with note
-            print(f"[ServiceCollector] ImportError: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
             return {
@@ -163,7 +144,6 @@ class ServiceCollector(BaseCollector):
             }
         except Exception as e:
             # If we can't access services, return what we have with error
-            print(f"[ServiceCollector] Exception: {e}", file=sys.stderr)
             import traceback
             error_detail = traceback.format_exc()
             traceback.print_exc(file=sys.stderr)
@@ -190,7 +170,6 @@ class ServiceCollector(BaseCollector):
             'services': services,
             'total_count': len(services)
         }
-        print(f"[ServiceCollector] Returning {len(services)} services", file=sys.stderr)
         return result
     
     def _get_start_type(self, start_type):

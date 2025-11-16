@@ -142,6 +142,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>Registry Run Keys</b>"))
         layout.addWidget(QLabel("These keys execute programs at startup/login"))
@@ -162,6 +164,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>Registry Logon Keys</b>"))
         layout.addWidget(QLabel("Winlogon configuration keys"))
@@ -182,6 +186,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>Image File Execution Options (IFEO)</b>"))
         layout.addWidget(QLabel("Used for debugger hijacking - MITRE T1546.012"))
@@ -202,6 +208,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>AppInit DLLs</b>"))
         layout.addWidget(QLabel("DLLs loaded into every process - MITRE T1546.010"))
@@ -216,15 +224,17 @@ class PersistenceView(QWidget):
         layout = QVBoxLayout(widget)
         
         table = QTableWidget()
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(["Folder", "File Name", "Path", "Size (bytes)", "Modified"])
+        table.setColumnCount(7)
+        table.setHorizontalHeaderLabels(["Folder", "Type", "File Name", "Target/Path", "Size (bytes)", "Created", "Modified"])
         table.setSortingEnabled(True)
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>Startup Folders</b>"))
-        layout.addWidget(QLabel("Executables in startup directories - MITRE T1547.001"))
+        layout.addWidget(QLabel("Executables and shortcuts in startup directories - MITRE T1547.001"))
         layout.addWidget(table)
         
         self.startup_folders_table = table
@@ -242,6 +252,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>Scheduled Tasks</b>"))
         layout.addWidget(QLabel("Windows Task Scheduler tasks - MITRE T1053.005"))
@@ -262,6 +274,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>WMI Event Subscriptions</b>"))
         layout.addWidget(QLabel("WMI event filters and consumers - MITRE T1546.003"))
@@ -282,6 +296,8 @@ class PersistenceView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
+        # Set consistent row height (same as process tree)
+        table.verticalHeader().setDefaultSectionSize(52)
         
         layout.addWidget(QLabel("<b>Suspicious Service Paths</b>"))
         layout.addWidget(QLabel("Services with ImagePath in suspicious locations"))
@@ -390,21 +406,38 @@ class PersistenceView(QWidget):
                 table.setItem(row_idx, 2, QTableWidgetItem(row_data['name']))
                 table.setItem(row_idx, 3, QTableWidgetItem(row_data['value']))
                 
-                # Check if value contains a LOLBIN and highlight in light blue
+                # Determine highlighting priority:
+                # 1. Debugger value (highest priority - indicates hijacking) - red/orange
+                # 2. LOLBIN in value (lower priority) - blue
                 value_str = str(row_data['value'])
-                if value_str and value_str != 'N/A':
+                value_name_str = str(row_data['name'])
+                
+                background_color = None
+                foreground_color = None
+                
+                # Check if this is a Debugger value (IFEO hijacking indicator)
+                if value_name_str and 'debugger' in value_name_str.lower():
+                    # Debugger value indicates hijacking - highlight in red/orange
+                    background_color = QColor(220, 100, 50)  # Orange-red for hijacking
+                    foreground_color = QColor(255, 255, 255)  # White text
+                elif value_str and value_str != 'N/A' and value_str not in ['(empty - no IFEO entries configured)', '(subkey exists but no values found)']:
+                    # Check if value contains a LOLBIN
                     # Extract executable name from value (handle quoted paths and arguments)
                     executable_name = value_str.split()[0].strip('"\'')
                     executable_name = os.path.basename(executable_name).lower()
                     
                     if executable_name in self.LOLBINS:
-                        lolbin_color = QColor(80, 140, 200)  # Darker blue for better contrast
-                        fg_color = QColor(255, 255, 255)  # White text for readability
-                        for col in range(4):
-                            item = table.item(row_idx, col)
-                            if item:
-                                item.setBackground(QBrush(lolbin_color))
-                                item.setForeground(QBrush(fg_color))
+                        background_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                        foreground_color = QColor(255, 255, 255)  # White text for readability
+                
+                # Apply highlighting if set
+                if background_color:
+                    for col in range(4):
+                        item = table.item(row_idx, col)
+                        if item:
+                            item.setBackground(QBrush(background_color))
+                            if foreground_color:
+                                item.setForeground(QBrush(foreground_color))
             
             # Resize columns only once after all rows are populated
             table.resizeColumnsToContents()
@@ -424,41 +457,105 @@ class PersistenceView(QWidget):
             rows = []
             
             for folder_entry in folders_data:
-                if 'error' in folder_entry:
-                    continue
-                
                 folder = folder_entry.get('folder', 'N/A')
                 
-                if 'files' in folder_entry:
-                    for file in folder_entry['files']:
-                        rows.append({
-                            'folder': folder,
-                            'name': file.get('name', ''),
-                            'path': file.get('path', ''),
-                            'size': file.get('size', 0),
-                            'modified': file.get('modified', '')
-                        })
+                # Handle folder errors (folder doesn't exist, permission denied, etc.)
+                if 'error' in folder_entry:
+                    rows.append({
+                        'folder': folder,
+                        'type': 'Error',
+                        'name': '',
+                        'target_path': folder_entry.get('error', 'Unknown error'),
+                        'size': 0,
+                        'created': '',
+                        'modified': ''
+                    })
+                    continue
+                
+                # Handle empty folders
+                if 'files' not in folder_entry or not folder_entry['files']:
+                    rows.append({
+                        'folder': folder,
+                        'type': 'Empty',
+                        'name': '(No files found)',
+                        'target_path': '',
+                        'size': 0,
+                        'created': '',
+                        'modified': ''
+                    })
+                    continue
+                
+                # Process files in folder
+                for file in folder_entry['files']:
+                    file_type = file.get('type', 'file')
+                    file_name = file.get('name', '')
+                    
+                    # For shortcuts, show target; for files, show path
+                    if file_type == 'shortcut':
+                        target_path = file.get('target', 'Unable to resolve shortcut')
+                        # Include arguments if present
+                        arguments = file.get('arguments', '')
+                        if arguments:
+                            target_path = f"{target_path} {arguments}"
+                    else:
+                        target_path = file.get('path', '')
+                    
+                    # Handle file errors
+                    if 'error' in file:
+                        target_path = file.get('error', 'Unknown error')
+                    
+                    rows.append({
+                        'folder': folder,
+                        'type': file_type.capitalize(),
+                        'name': file_name,
+                        'target_path': target_path,
+                        'size': file.get('size', 0),
+                        'created': file.get('created', ''),
+                        'modified': file.get('modified', '')
+                    })
             
             self.startup_folders_table.setRowCount(len(rows))
             
             for row_idx, row_data in enumerate(rows):
                 self.startup_folders_table.setItem(row_idx, 0, QTableWidgetItem(row_data['folder']))
-                self.startup_folders_table.setItem(row_idx, 1, QTableWidgetItem(row_data['name']))
-                self.startup_folders_table.setItem(row_idx, 2, QTableWidgetItem(row_data['path']))
-                self.startup_folders_table.setItem(row_idx, 3, QTableWidgetItem(str(row_data['size'])))
-                self.startup_folders_table.setItem(row_idx, 4, QTableWidgetItem(row_data['modified']))
+                self.startup_folders_table.setItem(row_idx, 1, QTableWidgetItem(row_data['type']))
+                self.startup_folders_table.setItem(row_idx, 2, QTableWidgetItem(row_data['name']))
+                self.startup_folders_table.setItem(row_idx, 3, QTableWidgetItem(row_data['target_path']))
+                self.startup_folders_table.setItem(row_idx, 4, QTableWidgetItem(str(row_data['size'])))
+                self.startup_folders_table.setItem(row_idx, 5, QTableWidgetItem(row_data['created']))
+                self.startup_folders_table.setItem(row_idx, 6, QTableWidgetItem(row_data['modified']))
                 
-                # Check if path contains a LOLBIN and highlight in light blue
-                path_str = str(row_data['path'])
-                if path_str and path_str != 'N/A':
-                    executable_name = os.path.basename(path_str).lower()
+                # Check if target/path contains a LOLBIN and highlight in blue
+                target_path_str = str(row_data['target_path'])
+                if target_path_str and target_path_str != 'N/A' and target_path_str not in ['', 'Unable to resolve shortcut', 'Unable to resolve shortcut target']:
+                    # Extract executable name from target path (handle quoted paths and arguments)
+                    executable_name = target_path_str.split()[0].strip('"\'')
+                    executable_name = os.path.basename(executable_name).lower()
                     
                     if executable_name in self.LOLBINS:
-                        lolbin_color = QColor(200, 230, 255)  # Light blue
-                        for col in range(5):
+                        lolbin_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(7):
                             item = self.startup_folders_table.item(row_idx, col)
                             if item:
-                                item.setBackground(lolbin_color)
+                                item.setBackground(QBrush(lolbin_color))
+                                item.setForeground(QBrush(fg_color))
+                
+                # Highlight shortcuts in a different color (light yellow)
+                if row_data['type'].lower() == 'shortcut':
+                    shortcut_color = QColor(255, 255, 200)  # Light yellow
+                    for col in range(7):
+                        item = self.startup_folders_table.item(row_idx, col)
+                        if item:
+                            # Only apply if not already highlighted as LOLBIN
+                            bg_brush = item.background()
+                            if bg_brush.style() != 0:  # Has a background
+                                bg_color = bg_brush.color()
+                                if bg_color != QColor(80, 140, 200):  # Not LOLBIN blue
+                                    item.setBackground(QBrush(shortcut_color))
+                            else:
+                                # No background set, apply shortcut color
+                                item.setBackground(QBrush(shortcut_color))
             
             # Resize columns only once after all rows are populated
             self.startup_folders_table.resizeColumnsToContents()
@@ -686,6 +783,21 @@ class PersistenceView(QWidget):
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
         
+        # Orange-Red - Debugger/Hijacking (highest priority)
+        orange_red_box = QLabel()
+        orange_red_box.setFixedSize(14, 14)
+        orange_red_box.setStyleSheet(
+            "background-color: #dc6432;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
+        legend_layout.addWidget(orange_red_box)
+        orange_red_label = QLabel("Orange-Red: Debugger/Hijacking")
+        orange_red_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
+        legend_layout.addWidget(orange_red_label)
+        
         # Orange - Recently modified (darker orange for better contrast)
         orange_box = QLabel()
         orange_box.setFixedSize(14, 14)
@@ -715,6 +827,21 @@ class PersistenceView(QWidget):
             "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
         )
         legend_layout.addWidget(blue_label)
+        
+        # Yellow - Shortcut (light yellow)
+        yellow_box = QLabel()
+        yellow_box.setFixedSize(14, 14)
+        yellow_box.setStyleSheet(
+            "background-color: #ffffc8;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
+        legend_layout.addWidget(yellow_box)
+        yellow_label = QLabel("Yellow: Shortcut")
+        yellow_label.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
+        legend_layout.addWidget(yellow_label)
         
         legend_layout.addStretch()
         return legend_frame

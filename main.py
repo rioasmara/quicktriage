@@ -149,20 +149,29 @@ def main():
         }
 
         QTableWidget::item {
-            padding: 4px 8px;
+            padding: 12px 8px;
             border-bottom: 1px solid #182636;
             color: #b6ddff;
+            min-height: 52px;
             /* Don't set background-color here - allow programmatic backgrounds */
         }
 
+        /* Disable hover effect to prevent UI lag */
         QTableWidget::item:hover:!selected {
-            /* Only show hover background if item doesn't have custom background */
-            background-color: #17273a;
+            background-color: transparent;
         }
 
         QTableWidget::item:selected {
             background-color: #21405a;
             color: #ffffff;
+            padding: 12px 8px;
+            min-height: 52px;
+        }
+
+        /* Vertical header for consistent row height */
+        QTableWidget QHeaderView::section:vertical {
+            min-height: 52px;
+            height: 52px;
         }
 
         QHeaderView::section {
@@ -194,21 +203,40 @@ def main():
             padding: 2px;
         }
 
+        /* Tree Widget Branch Indicators (Expand/Collapse Arrows) */
+        QTreeWidget::branch {
+            background-color: #101b27;
+        }
+
+        /* Hide default branch indicators - we'll draw custom visible ones */
+        QTreeWidget::branch:closed:has-children {
+            image: none;
+            border-image: none;
+        }
+
+        QTreeWidget::branch:open:has-children {
+            image: none;
+            border-image: none;
+        }
+
         QTreeWidget::item {
-            padding: 4px 8px;
+            padding: 6px 8px;
             border-bottom: 1px solid #182636;
             color: #b6ddff;
+            min-height: 32px;
             /* Don't set background-color here - allow programmatic backgrounds */
         }
 
+        /* Disable hover effect to prevent UI lag */
         QTreeWidget::item:hover:!selected {
-            /* Only show hover background if item doesn't have custom background */
-            background-color: #17273a;
+            background-color: transparent;
         }
         
         QTreeWidget::item:selected {
             background-color: #21405a;
             color: #ffffff;
+            padding: 6px 8px;
+            min-height: 32px;
         }
 
         /* Input Fields */
@@ -220,10 +248,17 @@ def main():
             background-color: #0b141f;
             border: 1px solid #1e2f42;
             border-radius: 4px;
-            padding: 6px 8px;
+            padding: 8px 8px;
+            min-height: 28px;
             selection-background-color: #1e536d;
             selection-color: #e6fbff;
             color: #e0f6ff;
+        }
+        
+        /* Table cell editor - ensure proper height when editing */
+        QTableWidget QLineEdit {
+            min-height: 36px;
+            padding: 10px 8px;
         }
 
         QLineEdit:focus,
@@ -414,7 +449,7 @@ def main():
     """)
     
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     
     sys.exit(app.exec())
 

@@ -77,12 +77,13 @@ class NetworkView(QWidget):
         super().__init__()
         self.network_data = None
         self.process_data = None  # Store process data to map PID to create_time
-        # Track rows that should blink (LOLBIN + ESTABLISHED)
-        self.blinking_rows = {}  # {row: connection_data}
+        # Track rows that should blink (LOLBIN + ESTABLISHED, or Public IP + LOLBIN + ESTABLISHED)
+        self.blinking_rows = {}  # {row: {'conn': connection_data, 'type': 'red' or 'orange'}}
         self.blink_state = False  # Current blink state (on/off)
         self.blink_timer = QTimer(self)
         self.blink_timer.timeout.connect(self._toggle_blink)
         self.blink_timer.start(500)  # Blink every 500ms
+        self.notification_callback = None  # Callback for notifications
         self.init_ui()
     
     def init_ui(self):
@@ -151,6 +152,9 @@ class NetworkView(QWidget):
         self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
+        # Set row height for better readability when editing
+        self.table.verticalHeader().setDefaultSectionSize(52)
+        
         # Enable tooltips and connect to itemEntered signal for hover tooltips
         self.table.setMouseTracking(True)
         self.table.itemEntered.connect(self._on_item_hovered)
@@ -197,8 +201,78 @@ class NetworkView(QWidget):
         # Check if it's localhost
         return ip.lower() in ('127.0.0.1', 'localhost', '::1', '0.0.0.0')
     
+    def _is_public_ip(self, address):
+        """Check if an address is a public IP (not private/localhost)."""
+        if not address or address == 'N/A':
+            return False
+        
+        # Extract IP from "IP:PORT" format
+        if ':' in address:
+            ip = address.split(':')[0].strip()
+        else:
+            ip = address.strip()
+        
+        # Check if it's localhost first
+        if self._is_localhost(address):
+            return False
+        
+        # IPv6 check
+        if ':' in ip:
+            # IPv6 link-local addresses (fe80::/10)
+            if ip.startswith('fe80:') or ip.startswith('fe80::'):
+                return False
+            # IPv6 unique local addresses (fc00::/7) - fc00::/7 and fd00::/8
+            if ip.startswith('fc') or ip.startswith('fd'):
+                return False
+            # IPv6 localhost/loopback
+            if ip == '::1' or ip.lower() == 'localhost' or ip == '0:0:0:0:0:0:0:1':
+                return False
+            # IPv6 unspecified address
+            if ip == '::' or ip == '0:0:0:0:0:0:0:0':
+                return False
+            # If it's a valid IPv6 and not private, it's public
+            return True
+        
+        # IPv4 check
+        try:
+            parts = ip.split('.')
+            if len(parts) != 4:
+                return False
+            
+            # Convert to integers
+            octets = [int(part) for part in parts]
+            
+            # Private IP ranges:
+            # 10.0.0.0/8
+            if octets[0] == 10:
+                return False
+            # 172.16.0.0/12
+            if octets[0] == 172 and 16 <= octets[1] <= 31:
+                return False
+            # 192.168.0.0/16
+            if octets[0] == 192 and octets[1] == 168:
+                return False
+            # 169.254.0.0/16 (link-local)
+            if octets[0] == 169 and octets[1] == 254:
+                return False
+            # 127.0.0.0/8 (localhost)
+            if octets[0] == 127:
+                return False
+            # 0.0.0.0 (unspecified)
+            if all(o == 0 for o in octets):
+                return False
+            
+            # If it's a valid IPv4 and not in private ranges, it's public
+            return True
+        except (ValueError, IndexError):
+            return False
+    
     def populate_table(self, connections):
-        """Populate the table with connection data."""
+        """Populate the table with connection data (batched for better performance)."""
+        if not connections:
+            self.table.setRowCount(0)
+            return
+        
         # Disable sorting and updates for better performance during bulk operations
         was_sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
@@ -209,7 +283,10 @@ class NetworkView(QWidget):
             self.blinking_rows.clear()
             self.blink_state = False
             
-            self.table.setRowCount(len(connections))
+            # Process in batches of 150
+            batch_size = 150
+            total_rows = len(connections)
+            self.table.setRowCount(total_rows)
             
             # Build PID to create_time mapping if process data is available
             pid_to_create_time = {}
@@ -217,71 +294,111 @@ class NetworkView(QWidget):
                 for proc in self.process_data['processes']:
                     pid_to_create_time[proc['pid']] = proc.get('create_time', 'N/A')
             
-            for row, conn in enumerate(connections):
-                self.table.setItem(row, 0, QTableWidgetItem(str(conn['pid'])))
-                self.table.setItem(row, 1, QTableWidgetItem(conn['process_name']))
-                self.table.setItem(row, 2, QTableWidgetItem(conn['local_address']))
-                self.table.setItem(row, 3, QTableWidgetItem(conn['remote_address']))
-                self.table.setItem(row, 4, QTableWidgetItem(conn['status']))
-                self.table.setItem(row, 5, QTableWidgetItem(conn['family']))
+            for batch_start in range(0, total_rows, batch_size):
+                batch_end = min(batch_start + batch_size, total_rows)
+                batch = connections[batch_start:batch_end]
                 
-                # Get process creation time from process data
-                pid = conn.get('pid')
-                create_time = pid_to_create_time.get(pid, 'N/A') if pid != 'N/A' and pid is not None else 'N/A'
-                self.table.setItem(row, 6, QTableWidgetItem(create_time))
+                # Populate this batch
+                for i, conn in enumerate(batch):
+                    row = batch_start + i
+                    self.table.setItem(row, 0, QTableWidgetItem(str(conn['pid'])))
+                    self.table.setItem(row, 1, QTableWidgetItem(conn['process_name']))
+                    self.table.setItem(row, 2, QTableWidgetItem(conn['local_address']))
+                    self.table.setItem(row, 3, QTableWidgetItem(conn['remote_address']))
+                    self.table.setItem(row, 4, QTableWidgetItem(conn['status']))
+                    self.table.setItem(row, 5, QTableWidgetItem(conn['family']))
+                    
+                    # Get process creation time from process data
+                    pid = conn.get('pid')
+                    create_time = pid_to_create_time.get(pid, 'N/A') if pid != 'N/A' and pid is not None else 'N/A'
+                    self.table.setItem(row, 6, QTableWidgetItem(create_time))
+                    
+                    # Check if remote address is localhost
+                    remote_addr = conn.get('remote_address', '')
+                    is_localhost = self._is_localhost(remote_addr)
+                    is_public_ip = self._is_public_ip(remote_addr)
+                    
+                    # Skip highlighting if remote address is localhost
+                    if is_localhost:
+                        continue
+                    
+                    # Apply color coding based on network status, LOLBIN, and public IP
+                    # Priority: ESTABLISHED + Public IP + LOLBIN (blinking red) > ESTABLISHED + Public IP (red) > 
+                    #          ESTABLISHED + LOLBIN (blinking red) > ESTABLISHED (red) > LISTEN (yellow) > LOLBIN (light blue)
+                    process_name_lower = conn.get('process_name', '').lower()
+                    is_lolbin = process_name_lower in self.LOLBINS
+                    status = conn.get('status', '').upper()
+                    
+                    if status == 'ESTABLISHED' and is_public_ip and is_lolbin:
+                        # Blinking red for LOLBINs with established connections to public IPs (highest priority)
+                        self.blinking_rows[row] = {'conn': conn, 'type': 'red'}
+                        # Start with red background - darker for better contrast
+                        bg_color = QColor(200, 50, 50)  # Darker red for public IP + LOLBIN
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(7):
+                            item = self.table.item(row, col)
+                            if item:
+                                item.setBackground(QBrush(bg_color))
+                                item.setForeground(QBrush(fg_color))
+                    elif status == 'ESTABLISHED' and is_public_ip:
+                        # Red for established connections to public IPs
+                        bg_color = QColor(220, 100, 100)  # Medium red for public IP connections
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(7):
+                            item = self.table.item(row, col)
+                            if item:
+                                item.setBackground(QBrush(bg_color))
+                                item.setForeground(QBrush(fg_color))
+                    elif status == 'ESTABLISHED' and is_lolbin:
+                        # Blinking red for LOLBINs with established connections
+                        self.blinking_rows[row] = {'conn': conn, 'type': 'red'}
+                        # Start with red background - darker for better contrast
+                        bg_color = QColor(200, 50, 50)  # Darker red for better contrast
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(7):
+                            item = self.table.item(row, col)
+                            if item:
+                                item.setBackground(QBrush(bg_color))
+                                item.setForeground(QBrush(fg_color))
+                    elif status == 'ESTABLISHED':
+                        # Red for established connections
+                        bg_color = QColor(220, 100, 100)  # Medium red for better contrast
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(7):
+                            item = self.table.item(row, col)
+                            if item:
+                                item.setBackground(QBrush(bg_color))
+                                item.setForeground(QBrush(fg_color))
+                    elif status == 'LISTEN':
+                        # Yellow for listening processes
+                        bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
+                        fg_color = QColor(0, 0, 0)  # Black text on yellow background
+                        for col in range(7):
+                            item = self.table.item(row, col)
+                            if item:
+                                item.setBackground(QBrush(bg_color))
+                                item.setForeground(QBrush(fg_color))
+                    elif is_lolbin:
+                        # Blue for LOLBINs (when no network status)
+                        bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
+                        fg_color = QColor(255, 255, 255)  # White text for readability
+                        for col in range(7):
+                            item = self.table.item(row, col)
+                            if item:
+                                item.setBackground(QBrush(bg_color))
+                                item.setForeground(QBrush(fg_color))
                 
-                # Check if remote address is localhost
-                remote_addr = conn.get('remote_address', '')
-                is_localhost = self._is_localhost(remote_addr)
+                # Re-enable updates temporarily to show progress
+                self.table.setUpdatesEnabled(True)
+                self.table.setUpdatesEnabled(False)
                 
-                # Skip highlighting if remote address is localhost
-                if is_localhost:
-                    continue
-                
-                # Apply color coding based on network status and LOLBIN
-                # Priority: ESTABLISHED + LOLBIN (blinking red) > ESTABLISHED (red) > LISTEN (yellow) > LOLBIN (light blue)
-                process_name_lower = conn.get('process_name', '').lower()
-                is_lolbin = process_name_lower in self.LOLBINS
-                status = conn.get('status', '').upper()
-                
-                if status == 'ESTABLISHED' and is_lolbin:
-                    # Blinking red for LOLBINs with established connections (highest priority)
-                    self.blinking_rows[row] = conn
-                    # Start with red background - darker for better contrast
-                    bg_color = QColor(200, 50, 50)  # Darker red for better contrast
-                    fg_color = QColor(255, 255, 255)  # White text for readability
-                    for col in range(7):
-                        item = self.table.item(row, col)
-                        if item:
-                            item.setBackground(QBrush(bg_color))
-                            item.setForeground(QBrush(fg_color))
-                elif status == 'ESTABLISHED':
-                    # Red for established connections
-                    bg_color = QColor(220, 100, 100)  # Medium red for better contrast
-                    fg_color = QColor(255, 255, 255)  # White text for readability
-                    for col in range(7):
-                        item = self.table.item(row, col)
-                        if item:
-                            item.setBackground(QBrush(bg_color))
-                            item.setForeground(QBrush(fg_color))
-                elif status == 'LISTEN':
-                    # Yellow for listening processes
-                    bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
-                    fg_color = QColor(0, 0, 0)  # Black text on yellow background
-                    for col in range(7):
-                        item = self.table.item(row, col)
-                        if item:
-                            item.setBackground(QBrush(bg_color))
-                            item.setForeground(QBrush(fg_color))
-                elif is_lolbin:
-                    # Blue for LOLBINs (when no network status)
-                    bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
-                    fg_color = QColor(255, 255, 255)  # White text for readability
-                    for col in range(7):
-                        item = self.table.item(row, col)
-                        if item:
-                            item.setBackground(QBrush(bg_color))
-                            item.setForeground(QBrush(fg_color))
+                # Show notification for each batch
+                if self.notification_callback and batch_end < total_rows:
+                    self.notification_callback(f"Network table: {batch_end}/{total_rows} records loaded...")
+            
+            # Final notification
+            if self.notification_callback:
+                self.notification_callback(f"Network table updated: {total_rows} records loaded")
             
             # Resize columns only once after all rows are populated
             self.table.resizeColumnsToContents()
@@ -297,16 +414,16 @@ class NetworkView(QWidget):
         
         self.blink_state = not self.blink_state
         
-        # Bright red when on, darker red when off - using darker colors for better contrast
-        if self.blink_state:
-            bg_color = QColor(220, 30, 30)  # Bright red with good contrast
-        else:
-            bg_color = QColor(180, 60, 60)  # Darker red
-        fg_color = QColor(255, 255, 255)  # White text for readability
-        
-        # Update all blinking rows
-        for row in self.blinking_rows.keys():
+        # Update all blinking rows - all are red now
+        for row, row_data in self.blinking_rows.items():
             if row < self.table.rowCount():  # Check if row still exists
+                # Red blinking for LOLBIN + ESTABLISHED (including public IP)
+                if self.blink_state:
+                    bg_color = QColor(220, 30, 30)  # Bright red with good contrast
+                else:
+                    bg_color = QColor(180, 60, 60)  # Darker red
+                fg_color = QColor(255, 255, 255)  # White text for readability
+                
                 for col in range(7):
                     item = self.table.item(row, col)
                     if item:  # Check if item exists
@@ -484,6 +601,36 @@ class NetworkView(QWidget):
         legend_layout = QHBoxLayout(legend_frame)
         legend_layout.setSpacing(6)
         legend_layout.setContentsMargins(6, 4, 6, 4)
+        
+        # Blinking red - Public IP + LOLBIN + ESTABLISHED (highest priority)
+        red_box_public = QLabel()
+        red_box_public.setFixedSize(14, 14)
+        red_box_public.setStyleSheet(
+            "background-color: #c83232;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
+        legend_layout.addWidget(red_box_public)
+        red_label_public = QLabel("Blink Red: Public IP+LOLBIN+ESTABLISHED")
+        red_label_public.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
+        legend_layout.addWidget(red_label_public)
+        
+        # Red - Public IP + ESTABLISHED
+        red_box_public2 = QLabel()
+        red_box_public2.setFixedSize(14, 14)
+        red_box_public2.setStyleSheet(
+            "background-color: #dc6464;"
+            " border: 1px solid #29b6d3;"
+            " border-radius: 3px;"
+        )
+        legend_layout.addWidget(red_box_public2)
+        red_label_public2 = QLabel("Red: Public IP+ESTABLISHED")
+        red_label_public2.setStyleSheet(
+            "QLabel { font-size: 9pt; color: #e6faff; background-color: transparent; }"
+        )
+        legend_layout.addWidget(red_label_public2)
         
         # Blinking red - LOLBIN with ESTABLISHED (darker red for better contrast)
         red_box = QLabel()

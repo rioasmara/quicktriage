@@ -41,6 +41,13 @@ class ServiceView(QWidget):
         super().__init__()
         self.service_data = None
         self.error_label = None
+        self.notification_callback = None  # Callback for notifications
+        self.pending_services = []  # Services waiting to be populated
+        self.batch_timer = QTimer(self)
+        self.batch_timer.setSingleShot(True)
+        self.batch_timer.timeout.connect(self._process_next_batch)
+        self.batch_size = 50  # Process 50 items at a time for better responsiveness
+        self.current_batch_index = 0
         self.init_ui()
     
     def init_ui(self):
@@ -110,6 +117,9 @@ class ServiceView(QWidget):
         self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)  # Smoother scrolling
         self.table.resizeColumnsToContents()
         
+        # Set row height for better readability when editing
+        self.table.verticalHeader().setDefaultSectionSize(52)
+        
         layout.addWidget(self.table)
     
     def update_data(self, data):
@@ -151,73 +161,135 @@ class ServiceView(QWidget):
             self.error_label.setVisible(True)
     
     def populate_table(self, services):
-        """Populate the table with service data."""
+        """Populate the table with service data (chunked for better UI responsiveness)."""
+        if not services:
+            self.table.setRowCount(0)
+            return
+        
+        # Stop any existing batch processing
+        self.batch_timer.stop()
+        
+        # Store services and reset batch index
+        self.pending_services = services
+        self.current_batch_index = 0
+        
         # Disable sorting and updates for better performance during bulk operations
         was_sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         
-        try:
-            self.table.setRowCount(len(services))
-            
-            for row, service in enumerate(services):
-                try:
-                    # Safely convert all values to strings
-                    name = str(service.get('name', 'N/A'))
-                    display_name = str(service.get('display_name', 'N/A'))
-                    status = str(service.get('status', 'N/A'))
-                    start_type = str(service.get('start_type', 'N/A'))
-                    binary_path = str(service.get('binary_path', 'N/A'))
-                    description = str(service.get('description', 'N/A'))
-                    
-                    self.table.setItem(row, 0, QTableWidgetItem(name))
-                    self.table.setItem(row, 1, QTableWidgetItem(display_name))
-                    self.table.setItem(row, 2, QTableWidgetItem(status))
-                    
-                    # Check if executable name is a LOLBIN and add to LOLBIN column
-                    is_lolbin = False
-                    if binary_path and binary_path != 'N/A':
-                        # Extract executable name from binary path
-                        # Handle paths that might be quoted or have arguments
-                        executable_name = binary_path.split()[0].strip('"\'')
-                        executable_name = os.path.basename(executable_name).lower()
-                        
-                        if executable_name in self.LOLBINS:
-                            is_lolbin = True
-                    
-                    # Add LOLBIN column (after Status)
-                    lolbin_item = QTableWidgetItem("Yes" if is_lolbin else "No")
-                    if is_lolbin:
-                        lolbin_item.setForeground(QBrush(QColor(100, 160, 220)))  # Blue text for LOLBIN
-                    self.table.setItem(row, 3, lolbin_item)
-                    
-                    self.table.setItem(row, 4, QTableWidgetItem(start_type))
-                    
-                    path_item = QTableWidgetItem(binary_path)
-                    if len(binary_path) > 50:
-                        path_item.setToolTip(binary_path)
-                    self.table.setItem(row, 5, path_item)
-                    
-                    desc_item = QTableWidgetItem(description)
-                    if len(description) > 50:
-                        desc_item.setToolTip(description)
-                    self.table.setItem(row, 6, desc_item)
-                except Exception as e:
-                    # Still add the row with error info
-                    self.table.setItem(row, 0, QTableWidgetItem(service.get('name', f'Service {row}')))
-                    self.table.setItem(row, 1, QTableWidgetItem('Error'))
-                    self.table.setItem(row, 2, QTableWidgetItem('N/A'))
-                    self.table.setItem(row, 3, QTableWidgetItem('N/A'))  # LOLBIN column
-                    self.table.setItem(row, 4, QTableWidgetItem('N/A'))
-                    self.table.setItem(row, 5, QTableWidgetItem(f'Error: {str(e)}'))
-                    self.table.setItem(row, 6, QTableWidgetItem('N/A'))
-            
-            # Resize columns only once after all rows are populated
-            self.table.resizeColumnsToContents()
-        finally:
-            # Re-enable updates and sorting
+        # Set total row count upfront
+        total_rows = len(services)
+        self.table.setRowCount(total_rows)
+        
+        # Store sorting state for later restoration
+        self._was_sorting = was_sorting
+        
+        # Start processing first batch
+        self._process_next_batch()
+    
+    def _process_next_batch(self):
+        """Process the next batch of services with proper yielding to event loop."""
+        if not self.pending_services or self.current_batch_index >= len(self.pending_services):
+            # All done, re-enable updates and sorting
+            total_rows = len(self.pending_services) if self.pending_services else 0
             self.table.setUpdatesEnabled(True)
-            self.table.setSortingEnabled(was_sorting)
+            self.table.setSortingEnabled(self._was_sorting)
+            self.table.resizeColumnsToContents()
+            
+            # Final notification
+            if self.notification_callback and total_rows > 0:
+                self.notification_callback(f"Service table updated: {total_rows} records loaded")
+            
+            # Clear pending services
+            self.pending_services = []
+            return
+        
+        # Get next batch
+        batch_start = self.current_batch_index
+        batch_end = min(batch_start + self.batch_size, len(self.pending_services))
+        batch = self.pending_services[batch_start:batch_end]
+        
+        # Populate this batch
+        for i, service in enumerate(batch):
+            row = batch_start + i
+            try:
+                # Safely convert all values to strings
+                name = str(service.get('name', 'N/A'))
+                display_name = str(service.get('display_name', 'N/A'))
+                status = str(service.get('status', 'N/A'))
+                start_type = str(service.get('start_type', 'N/A'))
+                binary_path = str(service.get('binary_path', 'N/A'))
+                description = str(service.get('description', 'N/A'))
+                
+                self.table.setItem(row, 0, QTableWidgetItem(name))
+                self.table.setItem(row, 1, QTableWidgetItem(display_name))
+                self.table.setItem(row, 2, QTableWidgetItem(status))
+                
+                # Check if executable name is a LOLBIN and add to LOLBIN column
+                is_lolbin = False
+                if binary_path and binary_path != 'N/A':
+                    # Extract executable name from binary path
+                    # Handle paths that might be quoted or have arguments
+                    executable_name = binary_path.split()[0].strip('"\'')
+                    executable_name = os.path.basename(executable_name).lower()
+                    
+                    if executable_name in self.LOLBINS:
+                        is_lolbin = True
+                
+                # Add LOLBIN column (after Status)
+                lolbin_item = QTableWidgetItem("Yes" if is_lolbin else "No")
+                if is_lolbin:
+                    lolbin_item.setForeground(QBrush(QColor(100, 160, 220)))  # Blue text for LOLBIN
+                self.table.setItem(row, 3, lolbin_item)
+                
+                self.table.setItem(row, 4, QTableWidgetItem(start_type))
+                
+                path_item = QTableWidgetItem(binary_path)
+                if len(binary_path) > 50:
+                    path_item.setToolTip(binary_path)
+                self.table.setItem(row, 5, path_item)
+                
+                desc_item = QTableWidgetItem(description)
+                if len(description) > 50:
+                    desc_item.setToolTip(description)
+                self.table.setItem(row, 6, desc_item)
+            except Exception as e:
+                # Still add the row with error info
+                self.table.setItem(row, 0, QTableWidgetItem(service.get('name', f'Service {row}')))
+                self.table.setItem(row, 1, QTableWidgetItem('Error'))
+                self.table.setItem(row, 2, QTableWidgetItem('N/A'))
+                self.table.setItem(row, 3, QTableWidgetItem('N/A'))  # LOLBIN column
+                self.table.setItem(row, 4, QTableWidgetItem('N/A'))
+                self.table.setItem(row, 5, QTableWidgetItem(f'Error: {str(e)}'))
+                self.table.setItem(row, 6, QTableWidgetItem('N/A'))
+        
+        # Update batch index
+        self.current_batch_index = batch_end
+        
+        # Re-enable updates temporarily to show progress
+        self.table.setUpdatesEnabled(True)
+        self.table.setUpdatesEnabled(False)
+        
+        # Show notification for this batch
+        if self.notification_callback and batch_end < len(self.pending_services):
+            self.notification_callback(f"Service table: {batch_end}/{len(self.pending_services)} records loaded...")
+        
+        # Schedule next batch with a small delay to yield to event loop
+        if batch_end < len(self.pending_services):
+            self.batch_timer.start(10)  # Process next batch after 10ms
+        else:
+            # All done, re-enable updates and sorting
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(self._was_sorting)
+            self.table.resizeColumnsToContents()
+            
+            # Final notification
+            if self.notification_callback:
+                self.notification_callback(f"Service table updated: {len(self.pending_services)} records loaded")
+            
+            # Clear pending services
+            self.pending_services = []
     
     def filter_services(self, text=None):
         """Filter services based on search text and status."""

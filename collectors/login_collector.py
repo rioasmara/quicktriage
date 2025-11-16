@@ -3,7 +3,7 @@ Login event collector for triage analysis.
 Windows-specific Security Event Log collection for user login events.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from collectors.base_collector import BaseCollector
 
 try:
@@ -31,12 +31,8 @@ class LoginCollector(BaseCollector):
         super().__init__()
     
     def collect(self):
-        """Collect Windows Security Event Log login events."""
-        import sys
-        print(f"[LoginCollector] Starting collection...", file=sys.stderr)
-        
+        """Collect Windows Security Event Log login events from the last 60 days."""
         if not WIN32_AVAILABLE:
-            print(f"[LoginCollector] ERROR: win32evtlog not available", file=sys.stderr)
             return {
                 'timestamp': datetime.now().isoformat(),
                 'error': 'win32evtlog module not available. Please install pywin32.',
@@ -44,18 +40,20 @@ class LoginCollector(BaseCollector):
                 'users': []
             }
         
+        # Calculate cutoff date (60 days ago)
+        cutoff_date = datetime.now() - timedelta(days=60)
+        
         logins = []
         users = set()
         
         try:
-            print(f"[LoginCollector] Opening Security event log...", file=sys.stderr)
             # Open Security event log
             hand = win32evtlog.OpenEventLog(None, "Security")
             
             try:
                 flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
                 
-                # Read all events without limit
+                # Read events, filtering to last 60 days
                 event_count = 0
                 login_event_count = 0
                 while True:
@@ -65,7 +63,22 @@ class LoginCollector(BaseCollector):
                         break
                     
                     event_count += len(events)
+                    events_older_than_cutoff = False
+                    
                     for event in events:
+                        # Check event time - if older than 60 days, skip it
+                        try:
+                            event_time = event.TimeGenerated
+                            if event_time < cutoff_date:
+                                # Since we're reading backwards (newest first),
+                                # if we encounter an event older than cutoff,
+                                # all subsequent events will also be older
+                                events_older_than_cutoff = True
+                                break
+                        except Exception:
+                            # If we can't get event time, skip this event
+                            continue
+                        
                         event_id = event.EventID
                         
                         # Filter for login-related events
@@ -82,17 +95,16 @@ class LoginCollector(BaseCollector):
                                         users.add(login_data['username'])
                             except Exception as e:
                                 # Skip events that can't be parsed
-                                import sys
-                                print(f"[LoginCollector] Error parsing login event: {e}", file=sys.stderr)
                                 continue
-                
-                print(f"[LoginCollector] Processed {event_count} total events, found {login_event_count} login events, collected {len(logins)} valid logins", file=sys.stderr)
+                    
+                    # If we encountered events older than cutoff, stop reading
+                    if events_older_than_cutoff:
+                        break
                 
             finally:
                 win32evtlog.CloseEventLog(hand)
         
         except Exception as e:
-            import sys
             import traceback
             error_str = str(e)
             error_code = None
@@ -104,11 +116,8 @@ class LoginCollector(BaseCollector):
                     "To collect login events, this application must be run as Administrator.\n"
                     "Please right-click the application and select 'Run as administrator'."
                 )
-                print(f"[LoginCollector] PRIVILEGE ERROR: {error_str}", file=sys.stderr)
             else:
                 error_message = f"Error reading Security event log: {error_str}"
-                print(f"[LoginCollector] EXCEPTION during collection: {e}", file=sys.stderr)
-                traceback.print_exc(file=sys.stderr)
             
             return {
                 'timestamp': datetime.now().isoformat(),
@@ -121,18 +130,14 @@ class LoginCollector(BaseCollector):
         # Sort logins by time (newest first) - handle missing time fields
         try:
             logins.sort(key=lambda x: x.get('time', '') or '', reverse=True)
-        except Exception as e:
+        except Exception:
             # If sorting fails, just return unsorted
-            import sys
-            print(f"[LoginCollector] Warning: Sorting failed: {e}", file=sys.stderr)
             pass
         
         # Convert users set to sorted list
         try:
             users_list = sorted(list(users))
-        except Exception as e:
-            import sys
-            print(f"[LoginCollector] Warning: User list conversion failed: {e}", file=sys.stderr)
+        except Exception:
             users_list = []
         
         # Ensure we always return a valid structure
@@ -143,14 +148,11 @@ class LoginCollector(BaseCollector):
             'total_events': len(logins)
         }
         
-        import sys
-        print(f"[LoginCollector] Collection complete: returning {len(result['logins'])} logins, {len(result['users'])} users", file=sys.stderr)
         return result
     
     def _parse_login_event(self, event, event_id):
         """Parse a login event from Windows Event Log."""
         try:
-            import sys
             # Get event time
             event_time = event.TimeGenerated
             time_str = event_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -158,7 +160,6 @@ class LoginCollector(BaseCollector):
             
             # Get event message strings (these contain the user info)
             strings = event.StringInserts if event.StringInserts else []
-            print(f"[LoginCollector] Parsing event {event_id}: {len(strings)} string inserts", file=sys.stderr)
             
             login_data = {
                 'event_id': event_id,
@@ -259,18 +260,10 @@ class LoginCollector(BaseCollector):
             
             # Only return if we got a username
             if login_data['username']:
-                import sys
-                print(f"[LoginCollector] Successfully parsed login event: user={login_data['username']}, event={event_id}", file=sys.stderr)
                 return login_data
             else:
-                import sys
-                print(f"[LoginCollector] Login event {event_id} parsed but no username found. Strings length: {len(strings) if 'strings' in locals() else 0}", file=sys.stderr)
                 return None
         
-        except Exception as e:
-            import sys
-            import traceback
-            print(f"[LoginCollector] Exception parsing login event {event_id}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        except Exception:
             return None
 

@@ -30,9 +30,8 @@ class PersistenceCollector(BaseCollector):
                 (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\RunServices"),
             ],
             'registry_logon_keys': [
-                (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Shell"),
-                (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Userinit"),
-                (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Notify"),
+                # These are actually values/subkeys in the Winlogon key, handled by _read_logon_keys()
+                (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"),
             ],
             'registry_policies': [
                 (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run"),
@@ -98,23 +97,21 @@ class PersistenceCollector(BaseCollector):
             self.PERSISTENCE_MECHANISMS['registry_run_keys']
         )
         
-        # Registry Logon Keys
-        mechanisms['registry_logon_keys'] = self._read_registry_keys(
-            self.PERSISTENCE_MECHANISMS['registry_logon_keys']
-        )
+        # Registry Logon Keys (special handling required - Shell and Userinit are values, Notify is a subkey)
+        mechanisms['registry_logon_keys'] = self._read_logon_keys()
         
         # Registry Policy Keys
         mechanisms['registry_policies'] = self._read_registry_keys(
             self.PERSISTENCE_MECHANISMS['registry_policies']
         )
         
-        # Registry Image File Execution Options (IFEO)
-        mechanisms['registry_image_hijack'] = self._read_registry_keys(
+        # Registry Image File Execution Options (IFEO) - special handling required (contains subkeys)
+        mechanisms['registry_image_hijack'] = self._read_ifeo_keys(
             self.PERSISTENCE_MECHANISMS['registry_image_hijack']
         )
         
-        # Registry AppInit DLLs
-        mechanisms['registry_appinit'] = self._read_registry_keys(
+        # Registry AppInit DLLs (special handling required)
+        mechanisms['registry_appinit'] = self._read_appinit_dlls(
             self.PERSISTENCE_MECHANISMS['registry_appinit']
         )
         
@@ -128,8 +125,8 @@ class PersistenceCollector(BaseCollector):
             self.PERSISTENCE_MECHANISMS['scheduled_tasks_paths']
         )
         
-        # WMI Event Subscriptions
-        mechanisms['wmi_subscriptions'] = self._read_registry_keys(
+        # WMI Event Subscriptions (special handling required - contains subkeys)
+        mechanisms['wmi_subscriptions'] = self._read_wmi_subscriptions(
             self.PERSISTENCE_MECHANISMS['wmi_event_subscriptions']
         )
         
@@ -191,38 +188,713 @@ class PersistenceCollector(BaseCollector):
         }
         return hkey_map.get(hkey, 'UNKNOWN')
     
+    def _read_appinit_dlls(self, registry_paths):
+        """Read AppInit_DLLs registry values (special handling required)."""
+        results = []
+        
+        if winreg is None:
+            return results
+        
+        for hkey, subkey_path in registry_paths:
+            try:
+                key = winreg.OpenKey(hkey, subkey_path)
+                items = []
+                
+                # First, check if LoadAppInit_DLLs is enabled (DWORD value)
+                load_appinit_enabled = False
+                try:
+                    load_appinit_value, _ = winreg.QueryValueEx(key, "LoadAppInit_DLLs")
+                    load_appinit_enabled = (load_appinit_value == 1)
+                except (FileNotFoundError, OSError):
+                    # LoadAppInit_DLLs doesn't exist or can't be read
+                    pass
+                
+                # Read the AppInit_DLLs value (can be REG_SZ or REG_MULTI_SZ)
+                try:
+                    appinit_value, reg_type = winreg.QueryValueEx(key, "AppInit_DLLs")
+                    
+                    # Handle different registry types
+                    if reg_type == winreg.REG_MULTI_SZ:
+                        # REG_MULTI_SZ is a list of strings
+                        dll_list = appinit_value if isinstance(appinit_value, list) else [appinit_value]
+                        dll_paths = [dll.strip() for dll in dll_list if dll.strip()]
+                    elif reg_type == winreg.REG_SZ:
+                        # REG_SZ is a single string, may contain multiple DLLs separated by spaces or commas
+                        dll_string = str(appinit_value).strip()
+                        if dll_string:
+                            # Split by comma or space
+                            dll_paths = [dll.strip() for dll in dll_string.replace(',', ' ').split() if dll.strip()]
+                        else:
+                            dll_paths = []
+                    else:
+                        # Unknown type, try to convert to string
+                        dll_string = str(appinit_value).strip()
+                        dll_paths = [dll.strip() for dll in dll_string.replace(',', ' ').split() if dll.strip()] if dll_string else []
+                    
+                    # Add LoadAppInit_DLLs status
+                    items.append({
+                        'name': 'LoadAppInit_DLLs',
+                        'value': '1 (Enabled)' if load_appinit_enabled else '0 (Disabled)',
+                        'type': 'REG_DWORD',
+                        'hkey': self._get_hkey_name(hkey),
+                        'path': subkey_path,
+                        'enabled': load_appinit_enabled
+                    })
+                    
+                    # Add AppInit_DLLs value
+                    if dll_paths:
+                        # Multiple DLLs found
+                        for dll_path in dll_paths:
+                            items.append({
+                                'name': 'AppInit_DLLs',
+                                'value': dll_path,
+                                'type': str(reg_type),
+                                'hkey': self._get_hkey_name(hkey),
+                                'path': subkey_path,
+                                'enabled': load_appinit_enabled
+                            })
+                    else:
+                        # No DLLs configured (empty value)
+                        items.append({
+                            'name': 'AppInit_DLLs',
+                            'value': '(empty - no DLLs configured)',
+                            'type': str(reg_type),
+                            'hkey': self._get_hkey_name(hkey),
+                            'path': subkey_path,
+                            'enabled': load_appinit_enabled
+                        })
+                        
+                except (FileNotFoundError, OSError) as e:
+                    # AppInit_DLLs value doesn't exist or can't be read
+                    items.append({
+                        'name': 'AppInit_DLLs',
+                        'value': f'Error: {str(e)}',
+                        'type': 'N/A',
+                        'hkey': self._get_hkey_name(hkey),
+                        'path': subkey_path,
+                        'enabled': load_appinit_enabled
+                    })
+                
+                # Also enumerate any other values in this key (for completeness)
+                i = 0
+                while True:
+                    try:
+                        name, value, reg_type = winreg.EnumValue(key, i)
+                        # Skip AppInit_DLLs and LoadAppInit_DLLs as we already handled them
+                        if name not in ['AppInit_DLLs', 'LoadAppInit_DLLs']:
+                            items.append({
+                                'name': name,
+                                'value': str(value),
+                                'type': str(reg_type),
+                                'hkey': self._get_hkey_name(hkey),
+                                'path': subkey_path
+                            })
+                        i += 1
+                    except OSError:
+                        break
+                
+                winreg.CloseKey(key)
+                
+                if items:
+                    results.append({
+                        'key': subkey_path,
+                        'hkey': self._get_hkey_name(hkey),
+                        'values': items
+                    })
+                else:
+                    # Even if no items, report the key was checked
+                    results.append({
+                        'key': subkey_path,
+                        'hkey': self._get_hkey_name(hkey),
+                        'values': [{
+                            'name': 'Status',
+                            'value': 'Key exists but no values found',
+                            'type': 'N/A',
+                            'hkey': self._get_hkey_name(hkey),
+                            'path': subkey_path
+                        }]
+                    })
+                    
+            except (FileNotFoundError, PermissionError, OSError) as e:
+                results.append({
+                    'key': subkey_path,
+                    'hkey': self._get_hkey_name(hkey),
+                    'error': str(e)
+                })
+        
+        return results
+    
+    def _read_logon_keys(self):
+        """Read Winlogon registry keys (Shell, Userinit, and Notify subkey)."""
+        results = []
+        
+        if winreg is None:
+            return results
+        
+        winlogon_path = r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+        hkey = winreg.HKEY_LOCAL_MACHINE
+        
+        try:
+            key = winreg.OpenKey(hkey, winlogon_path)
+            items = []
+            
+            # Read Shell value (default shell, usually explorer.exe)
+            try:
+                shell_value, shell_type = winreg.QueryValueEx(key, "Shell")
+                items.append({
+                    'name': 'Shell',
+                    'value': str(shell_value),
+                    'type': str(shell_type),
+                    'hkey': self._get_hkey_name(hkey),
+                    'path': winlogon_path,
+                    'description': 'Default shell executed at logon'
+                })
+            except (FileNotFoundError, OSError) as e:
+                # Shell value doesn't exist (unusual but possible)
+                items.append({
+                    'name': 'Shell',
+                    'value': f'Not found (Error: {str(e)})',
+                    'type': 'N/A',
+                    'hkey': self._get_hkey_name(hkey),
+                    'path': winlogon_path,
+                    'description': 'Default shell - value not found'
+                })
+            
+            # Read Userinit value (user initialization program)
+            try:
+                userinit_value, userinit_type = winreg.QueryValueEx(key, "Userinit")
+                # Userinit often has a trailing comma, normalize it
+                userinit_str = str(userinit_value).rstrip(',')
+                items.append({
+                    'name': 'Userinit',
+                    'value': userinit_str,
+                    'type': str(userinit_type),
+                    'hkey': self._get_hkey_name(hkey),
+                    'path': winlogon_path,
+                    'description': 'User initialization program executed at logon'
+                })
+            except (FileNotFoundError, OSError) as e:
+                # Userinit value doesn't exist (unusual but possible)
+                items.append({
+                    'name': 'Userinit',
+                    'value': f'Not found (Error: {str(e)})',
+                    'type': 'N/A',
+                    'hkey': self._get_hkey_name(hkey),
+                    'path': winlogon_path,
+                    'description': 'User initialization program - value not found'
+                })
+            
+            # Enumerate Notify subkey (contains DLL notification packages)
+            notify_path = winlogon_path + r"\Notify"
+            try:
+                notify_key = winreg.OpenKey(hkey, notify_path)
+                notify_items = []
+                
+                # Enumerate all subkeys in Notify
+                i = 0
+                while True:
+                    try:
+                        subkey_name = winreg.EnumKey(notify_key, i)
+                        subkey_path = notify_path + "\\" + subkey_name
+                        
+                        # Open each subkey and read its values
+                        try:
+                            subkey = winreg.OpenKey(notify_key, subkey_name)
+                            subkey_values = []
+                            
+                            j = 0
+                            while True:
+                                try:
+                                    value_name, value_data, value_type = winreg.EnumValue(subkey, j)
+                                    subkey_values.append({
+                                        'name': value_name,
+                                        'value': str(value_data),
+                                        'type': str(value_type)
+                                    })
+                                    j += 1
+                                except OSError:
+                                    break
+                            
+                            winreg.CloseKey(subkey)
+                            
+                            if subkey_values:
+                                notify_items.append({
+                                    'name': subkey_name,
+                                    'path': subkey_path,
+                                    'values': subkey_values,
+                                    'description': f'Notification package: {subkey_name}'
+                                })
+                        except (PermissionError, OSError) as e:
+                            # Can't read this subkey
+                            notify_items.append({
+                                'name': subkey_name,
+                                'path': subkey_path,
+                                'error': f'Cannot access subkey: {str(e)}',
+                                'description': f'Notification package: {subkey_name}'
+                            })
+                        
+                        i += 1
+                    except OSError:
+                        break
+                
+                winreg.CloseKey(notify_key)
+                
+                if notify_items:
+                    # Add each Notify subkey as a separate entry
+                    for notify_item in notify_items:
+                        if 'values' in notify_item:
+                            for value in notify_item['values']:
+                                items.append({
+                                    'name': f"Notify\\{notify_item['name']}\\{value['name']}",
+                                    'value': value['value'],
+                                    'type': value['type'],
+                                    'hkey': self._get_hkey_name(hkey),
+                                    'path': notify_item['path'],
+                                    'description': notify_item.get('description', 'Notification package')
+                                })
+                        elif 'error' in notify_item:
+                            items.append({
+                                'name': f"Notify\\{notify_item['name']}",
+                                'value': notify_item['error'],
+                                'type': 'N/A',
+                                'hkey': self._get_hkey_name(hkey),
+                                'path': notify_item['path'],
+                                'description': notify_item.get('description', 'Notification package')
+                            })
+                else:
+                    # Notify subkey exists but is empty
+                    items.append({
+                        'name': 'Notify',
+                        'value': '(empty - no notification packages configured)',
+                        'type': 'Subkey',
+                        'hkey': self._get_hkey_name(hkey),
+                        'path': notify_path,
+                        'description': 'Notification packages subkey - empty'
+                    })
+            except (FileNotFoundError, PermissionError, OSError) as e:
+                # Notify subkey doesn't exist or can't be accessed
+                items.append({
+                    'name': 'Notify',
+                    'value': f'Subkey not found or inaccessible: {str(e)}',
+                    'type': 'Subkey',
+                    'hkey': self._get_hkey_name(hkey),
+                    'path': notify_path,
+                    'description': 'Notification packages subkey'
+                })
+            
+            # Also enumerate any other important values in Winlogon key
+            # (for completeness, but skip Shell and Userinit as we already handled them)
+            i = 0
+            important_values = ['Shell', 'Userinit']  # Already handled
+            while True:
+                try:
+                    name, value, reg_type = winreg.EnumValue(key, i)
+                    if name not in important_values:
+                        # Add other Winlogon values (like AutoAdminLogon, DefaultDomainName, etc.)
+                        items.append({
+                            'name': name,
+                            'value': str(value),
+                            'type': str(reg_type),
+                            'hkey': self._get_hkey_name(hkey),
+                            'path': winlogon_path,
+                            'description': f'Winlogon configuration value: {name}'
+                        })
+                    i += 1
+                except OSError:
+                    break
+            
+            winreg.CloseKey(key)
+            
+            if items:
+                results.append({
+                    'key': winlogon_path,
+                    'hkey': self._get_hkey_name(hkey),
+                    'values': items
+                })
+            else:
+                # Even if no items, report the key was checked
+                results.append({
+                    'key': winlogon_path,
+                    'hkey': self._get_hkey_name(hkey),
+                    'values': [{
+                        'name': 'Status',
+                        'value': 'Key exists but no values found',
+                        'type': 'N/A',
+                        'hkey': self._get_hkey_name(hkey),
+                        'path': winlogon_path
+                    }]
+                })
+                
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            results.append({
+                'key': winlogon_path,
+                'hkey': self._get_hkey_name(hkey),
+                'error': str(e)
+            })
+        
+        return results
+    
+    def _read_ifeo_keys(self, registry_paths):
+        """Read Image File Execution Options (IFEO) registry keys (contains subkeys for each executable)."""
+        results = []
+        
+        if winreg is None:
+            return results
+        
+        for hkey, subkey_path in registry_paths:
+            try:
+                key = winreg.OpenKey(hkey, subkey_path)
+                items = []
+                
+                # Enumerate all subkeys in IFEO (each subkey is an executable name)
+                i = 0
+                while True:
+                    try:
+                        executable_name = winreg.EnumKey(key, i)
+                        executable_path = subkey_path + "\\" + executable_name
+                        
+                        # Open each executable's subkey and read its values
+                        try:
+                            exec_key = winreg.OpenKey(key, executable_name)
+                            exec_values = []
+                            
+                            # Read all values in this executable's subkey
+                            j = 0
+                            while True:
+                                try:
+                                    value_name, value_data, value_type = winreg.EnumValue(exec_key, j)
+                                    exec_values.append({
+                                        'name': value_name,
+                                        'value': str(value_data),
+                                        'type': str(value_type)
+                                    })
+                                    j += 1
+                                except OSError:
+                                    break
+                            
+                            winreg.CloseKey(exec_key)
+                            
+                            # Add each value as a separate entry
+                            if exec_values:
+                                for value in exec_values:
+                                    # Highlight Debugger value as it's the most important for hijacking
+                                    is_debugger = (value['name'].lower() == 'debugger')
+                                    items.append({
+                                        'name': f"{executable_name}\\{value['name']}",
+                                        'value': value['value'],
+                                        'type': value['type'],
+                                        'hkey': self._get_hkey_name(hkey),
+                                        'path': executable_path,
+                                        'executable': executable_name,
+                                        'value_name': value['name'],
+                                        'is_debugger': is_debugger,
+                                        'description': f'IFEO for {executable_name}: {value["name"]}'
+                                    })
+                            else:
+                                # Subkey exists but has no values (unusual)
+                                items.append({
+                                    'name': executable_name,
+                                    'value': '(subkey exists but no values found)',
+                                    'type': 'Subkey',
+                                    'hkey': self._get_hkey_name(hkey),
+                                    'path': executable_path,
+                                    'executable': executable_name,
+                                    'description': f'IFEO subkey for {executable_name} (empty)'
+                                })
+                        except (PermissionError, OSError) as e:
+                            # Can't read this subkey
+                            items.append({
+                                'name': executable_name,
+                                'value': f'Cannot access subkey: {str(e)}',
+                                'type': 'Subkey',
+                                'hkey': self._get_hkey_name(hkey),
+                                'path': executable_path,
+                                'executable': executable_name,
+                                'description': f'IFEO subkey for {executable_name} (inaccessible)'
+                            })
+                        
+                        i += 1
+                    except OSError:
+                        break
+                
+                winreg.CloseKey(key)
+                
+                if items:
+                    results.append({
+                        'key': subkey_path,
+                        'hkey': self._get_hkey_name(hkey),
+                        'values': items
+                    })
+                else:
+                    # Even if no subkeys, report the key was checked
+                    results.append({
+                        'key': subkey_path,
+                        'hkey': self._get_hkey_name(hkey),
+                        'values': [{
+                            'name': 'Status',
+                            'value': '(empty - no IFEO entries configured)',
+                            'type': 'N/A',
+                            'hkey': self._get_hkey_name(hkey),
+                            'path': subkey_path,
+                            'description': 'IFEO key exists but no executables have IFEO configured'
+                        }]
+                    })
+                    
+            except (FileNotFoundError, PermissionError, OSError) as e:
+                results.append({
+                    'key': subkey_path,
+                    'hkey': self._get_hkey_name(hkey),
+                    'error': str(e)
+                })
+        
+        return results
+    
+    def _read_wmi_subscriptions(self, registry_paths):
+        """Read WMI Event Subscriptions registry keys (contains subkeys for EventFilter, EventConsumer, FilterToConsumerBinding)."""
+        results = []
+        
+        if winreg is None:
+            return results
+        
+        for hkey, subkey_path in registry_paths:
+            try:
+                key = winreg.OpenKey(hkey, subkey_path)
+                items = []
+                
+                # WMI EventSub key contains subkeys for different subscription types:
+                # - EventFilter: Defines what events to monitor
+                # - EventConsumer: Defines what action to take
+                # - FilterToConsumerBinding: Binds filters to consumers
+                
+                # Enumerate all subkeys in EventSub
+                i = 0
+                while True:
+                    try:
+                        subscription_type = winreg.EnumKey(key, i)
+                        subscription_path = subkey_path + "\\" + subscription_type
+                        
+                        # Open each subscription type's subkey and enumerate its entries
+                        try:
+                            type_key = winreg.OpenKey(key, subscription_type)
+                            entries_found = False
+                            
+                            # Enumerate all entries in this subscription type (each entry is a subkey)
+                            j = 0
+                            while True:
+                                try:
+                                    entry_name = winreg.EnumKey(type_key, j)
+                                    entry_path = subscription_path + "\\" + entry_name
+                                    
+                                    # Open each entry's subkey and read its values
+                                    try:
+                                        entry_key = winreg.OpenKey(type_key, entry_name)
+                                        entry_values = []
+                                        
+                                        # Read all values in this entry
+                                        k = 0
+                                        while True:
+                                            try:
+                                                value_name, value_data, value_type = winreg.EnumValue(entry_key, k)
+                                                entry_values.append({
+                                                    'name': value_name,
+                                                    'value': str(value_data),
+                                                    'type': str(value_type)
+                                                })
+                                                k += 1
+                                            except OSError:
+                                                break
+                                        
+                                        winreg.CloseKey(entry_key)
+                                        
+                                        # Add each value as a separate entry
+                                        if entry_values:
+                                            entries_found = True
+                                            for value in entry_values:
+                                                items.append({
+                                                    'name': f"{subscription_type}\\{entry_name}\\{value['name']}",
+                                                    'value': value['value'],
+                                                    'type': value['type'],
+                                                    'hkey': self._get_hkey_name(hkey),
+                                                    'path': entry_path,
+                                                    'subscription_type': subscription_type,
+                                                    'entry_name': entry_name,
+                                                    'value_name': value['name'],
+                                                    'description': f'WMI {subscription_type}: {entry_name} - {value["name"]}'
+                                                })
+                                        else:
+                                            # Entry exists but has no values (unusual)
+                                            entries_found = True
+                                            items.append({
+                                                'name': f"{subscription_type}\\{entry_name}",
+                                                'value': '(entry exists but no values found)',
+                                                'type': 'Subkey',
+                                                'hkey': self._get_hkey_name(hkey),
+                                                'path': entry_path,
+                                                'subscription_type': subscription_type,
+                                                'entry_name': entry_name,
+                                                'description': f'WMI {subscription_type}: {entry_name} (empty)'
+                                            })
+                                    except (PermissionError, OSError) as e:
+                                        # Can't read this entry
+                                        entries_found = True
+                                        items.append({
+                                            'name': f"{subscription_type}\\{entry_name}",
+                                            'value': f'Cannot access entry: {str(e)}',
+                                            'type': 'Subkey',
+                                            'hkey': self._get_hkey_name(hkey),
+                                            'path': entry_path,
+                                            'subscription_type': subscription_type,
+                                            'entry_name': entry_name,
+                                            'description': f'WMI {subscription_type}: {entry_name} (inaccessible)'
+                                        })
+                                    
+                                    j += 1
+                                except OSError:
+                                    break
+                            
+                            winreg.CloseKey(type_key)
+                            
+                            if not entries_found:
+                                # Subscription type exists but is empty
+                                items.append({
+                                    'name': subscription_type,
+                                    'value': '(empty - no entries configured)',
+                                    'type': 'Subkey',
+                                    'hkey': self._get_hkey_name(hkey),
+                                    'path': subscription_path,
+                                    'subscription_type': subscription_type,
+                                    'description': f'WMI {subscription_type} (empty)'
+                                })
+                        except (PermissionError, OSError) as e:
+                            # Can't read this subscription type
+                            items.append({
+                                'name': subscription_type,
+                                'value': f'Cannot access subscription type: {str(e)}',
+                                'type': 'Subkey',
+                                'hkey': self._get_hkey_name(hkey),
+                                'path': subscription_path,
+                                'subscription_type': subscription_type,
+                                'description': f'WMI {subscription_type} (inaccessible)'
+                            })
+                        
+                        i += 1
+                    except OSError:
+                        break
+                
+                winreg.CloseKey(key)
+                
+                if items:
+                    results.append({
+                        'key': subkey_path,
+                        'hkey': self._get_hkey_name(hkey),
+                        'values': items
+                    })
+                else:
+                    # Even if no subkeys, report the key was checked
+                    results.append({
+                        'key': subkey_path,
+                        'hkey': self._get_hkey_name(hkey),
+                        'values': [{
+                            'name': 'Status',
+                            'value': '(empty - no WMI event subscriptions configured)',
+                            'type': 'N/A',
+                            'hkey': self._get_hkey_name(hkey),
+                            'path': subkey_path,
+                            'description': 'WMI EventSub key exists but no subscriptions configured'
+                        }]
+                    })
+                    
+            except (FileNotFoundError, PermissionError, OSError) as e:
+                results.append({
+                    'key': subkey_path,
+                    'hkey': self._get_hkey_name(hkey),
+                    'error': str(e)
+                })
+        
+        return results
+    
     def _check_startup_folders(self, folders):
-        """Check startup folders for executables."""
+        """Check startup folders for executables and shortcuts."""
         results = []
         
         for folder in folders:
-            if not folder or not os.path.exists(folder):
+            if not folder:
+                # Report missing folder path
+                results.append({
+                    'folder': 'N/A',
+                    'error': 'Folder path is empty or not defined'
+                })
+                continue
+            
+            # Always report the folder, even if it doesn't exist or is empty
+            folder_result = {
+                'folder': folder,
+                'files': []
+            }
+            
+            if not os.path.exists(folder):
+                folder_result['error'] = f'Folder does not exist: {folder}'
+                results.append(folder_result)
                 continue
             
             try:
+                # Check if it's actually a directory
+                if not os.path.isdir(folder):
+                    folder_result['error'] = f'Path exists but is not a directory: {folder}'
+                    results.append(folder_result)
+                    continue
+                
                 files = []
                 for item in os.listdir(folder):
                     item_path = os.path.join(folder, item)
-                    if os.path.isfile(item_path):
-                        stat = os.stat(item_path)
-                        files.append({
-                            'name': item,
-                            'path': item_path,
-                            'size': stat.st_size,
-                            'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                            'extension': os.path.splitext(item)[1].lower()
-                        })
+                    
+                    # Check both files and shortcuts
+                    if os.path.isfile(item_path) or item_path.lower().endswith('.lnk'):
+                        try:
+                            stat = os.stat(item_path)
+                            file_info = {
+                                'name': item,
+                                'path': item_path,
+                                'size': stat.st_size,
+                                'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                                'created': datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                                'extension': os.path.splitext(item)[1].lower()
+                            }
+                            
+                            # Try to resolve shortcut target if it's a .lnk file
+                            if item_path.lower().endswith('.lnk'):
+                                file_info['type'] = 'shortcut'
+                                try:
+                                    # Try to read shortcut target using win32com
+                                    import win32com.client
+                                    shell = win32com.client.Dispatch("WScript.Shell")
+                                    shortcut = shell.CreateShortCut(item_path)
+                                    file_info['target'] = shortcut.Targetpath
+                                    file_info['arguments'] = shortcut.Arguments
+                                    file_info['working_directory'] = shortcut.WorkingDirectory
+                                except:
+                                    # If win32com is not available or fails, just mark as shortcut
+                                    file_info['target'] = 'Unable to resolve shortcut target'
+                            else:
+                                file_info['type'] = 'file'
+                            
+                            files.append(file_info)
+                        except (OSError, PermissionError) as e:
+                            # If we can't stat the file, still add it with error info
+                            files.append({
+                                'name': item,
+                                'path': item_path,
+                                'error': f'Cannot access file: {str(e)}',
+                                'extension': os.path.splitext(item)[1].lower()
+                            })
                 
-                if files:
-                    results.append({
-                        'folder': folder,
-                        'files': files
-                    })
+                folder_result['files'] = files
+                # Always add result, even if files list is empty (to show folder was checked)
+                results.append(folder_result)
+                
             except (PermissionError, OSError) as e:
-                results.append({
-                    'folder': folder,
-                    'error': str(e)
-                })
+                folder_result['error'] = str(e)
+                results.append(folder_result)
         
         return results
     

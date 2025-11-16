@@ -5,10 +5,38 @@ Process view widget for displaying process information.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QPushButton, QHBoxLayout, QLineEdit, QLabel, QFrame,
-    QStyledItemDelegate, QStyleOptionViewItem
+    QStyledItemDelegate, QStyleOptionViewItem, QMenu, QDialog,
+    QTextEdit, QDialogButtonBox, QApplication
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QBrush, QPainter
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QEvent
+from PySide6.QtGui import QColor, QBrush, QPainter, QAction, QPen, QMouseEvent
+import base64
+
+
+class Base64DecodeDialog(QDialog):
+    """Dialog for displaying decoded base64 text."""
+    
+    def __init__(self, decoded_text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Base64 Decoded Result")
+        self.setMinimumSize(600, 400)
+        
+        layout = QVBoxLayout(self)
+        
+        # Label
+        label = QLabel("Decoded Base64:")
+        layout.addWidget(label)
+        
+        # Text area
+        self.text_area = QTextEdit()
+        self.text_area.setReadOnly(True)
+        self.text_area.setPlainText(decoded_text)
+        layout.addWidget(self.text_area)
+        
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        button_box.accepted.connect(self.accept)
+        layout.addWidget(button_box)
 
 
 class HighlightDelegate(QStyledItemDelegate):
@@ -71,33 +99,115 @@ class HighlightDelegate(QStyledItemDelegate):
         
         self._cache_dirty = False
     
+    def invalidate_cache(self):
+        """Invalidate the cache - call this when the tree is repopulated."""
+        self._cache_dirty = True
+        self._item_cache.clear()
+    
     def paint(self, painter, option, index):
         """Paint the item with custom background if it has one."""
-        # Quick check - if no highlights, use default painting
-        if not self.process_view.item_highlight_colors:
-            super().paint(painter, option, index)
+        # Draw visible branch indicators for column 0
+        if index.column() == 0:
+            tree_item = self._get_tree_item(index)
+            if tree_item and tree_item.childCount() > 0:
+                # Draw visible arrow indicator
+                self._draw_branch_indicator(painter, option, tree_item)
+        
+        # Get highlight colors from item data (much faster than dictionary lookup)
+        # Use column 0 data role to store highlight info
+        if index.column() == 0:
+            highlight_type = index.data(Qt.ItemDataRole.UserRole)
+            if highlight_type:
+                # Get colors from item data roles (stored as QVariant)
+                bg_color_data = index.data(Qt.ItemDataRole.UserRole + 1)  # Background color
+                fg_color_data = index.data(Qt.ItemDataRole.UserRole + 2)  # Foreground color
+                
+                if bg_color_data:
+                    bg_color = bg_color_data if isinstance(bg_color_data, QColor) else QColor(bg_color_data)
+                    painter.fillRect(option.rect, bg_color)
+                    
+                    if fg_color_data:
+                        fg_color = fg_color_data if isinstance(fg_color_data, QColor) else QColor(fg_color_data)
+                        option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+                    
+                    super().paint(painter, option, index)
+                    return
+        
+        # For other columns, check if parent item (column 0) has highlight
+        if index.column() != 0:
+            # Get the item for column 0 of the same row
+            parent_index = index.sibling(index.row(), 0)
+            if parent_index.isValid():
+                highlight_type = parent_index.data(Qt.ItemDataRole.UserRole)
+                if highlight_type:
+                    bg_color_data = parent_index.data(Qt.ItemDataRole.UserRole + 1)
+                    fg_color_data = parent_index.data(Qt.ItemDataRole.UserRole + 2)
+                    
+                    if bg_color_data:
+                        bg_color = bg_color_data if isinstance(bg_color_data, QColor) else QColor(bg_color_data)
+                        painter.fillRect(option.rect, bg_color)
+                        
+                        if fg_color_data:
+                            fg_color = fg_color_data if isinstance(fg_color_data, QColor) else QColor(fg_color_data)
+                            option.palette.setColor(option.palette.ColorRole.Text, fg_color)
+                        
+                        super().paint(painter, option, index)
+                        return
+        
+        # Default painting for non-highlighted items
+        super().paint(painter, option, index)
+    
+    def _draw_branch_indicator(self, painter, option, item):
+        """Draw a visible branch indicator (arrow) for expandable items."""
+        if not item or item.childCount() == 0:
             return
         
-        # Get tree item (cached for performance)
-        tree_item = self._get_tree_item(index)
+        # Get the tree widget to check if item is expanded
+        tree_widget = self.process_view.tree
+        is_expanded = item.isExpanded()
         
-        # Check if this item has a highlight color
-        if tree_item and tree_item in self.process_view.item_highlight_colors:
-            bg_color, fg_color = self.process_view.item_highlight_colors[tree_item]
-            
-            # Paint background for entire cell
-            painter.fillRect(option.rect, bg_color)
-            
-            # Use default delegate for text rendering (faster)
-            # Just set the foreground color if needed
-            if fg_color:
-                option.palette.setColor(option.palette.ColorRole.Text, fg_color)
-            
-            # Let default delegate handle text rendering
-            super().paint(painter, option, index)
+        # Calculate arrow position - draw it in the branch area (to the left of the item)
+        arrow_size = 8
+        indent = tree_widget.indentation()
+        
+        # In Qt, the branch area is always to the immediate left of the item
+        # option.rect.left() already accounts for the item's indentation level
+        # The branch area for this item is from (option.rect.left() - indent) to option.rect.left()
+        # Center the arrow in this branch area
+        branch_area_left = option.rect.left() - indent
+        arrow_x = branch_area_left + indent // 2 - arrow_size // 2
+        arrow_y = option.rect.center().y()
+        
+        # Make sure arrow doesn't go off-screen to the left (safety check)
+        if arrow_x < 0:
+            arrow_x = max(2, option.rect.left() - indent + 2)
+        
+        # Use a visible color (light blue/cyan from theme)
+        arrow_color = QColor(41, 182, 211)  # #29b6d3 - theme accent color
+        
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(arrow_color, 1.5))
+        painter.setBrush(QBrush(arrow_color))
+        
+        # Draw arrow (triangle)
+        if is_expanded:
+            # Draw down arrow (▼)
+            points = [
+                QPoint(arrow_x, arrow_y - arrow_size // 2),
+                QPoint(arrow_x + arrow_size, arrow_y - arrow_size // 2),
+                QPoint(arrow_x + arrow_size // 2, arrow_y + arrow_size // 2)
+            ]
         else:
-            # Default painting for non-highlighted items
-            super().paint(painter, option, index)
+            # Draw right arrow (▶)
+            points = [
+                QPoint(arrow_x, arrow_y - arrow_size // 2),
+                QPoint(arrow_x + arrow_size // 2, arrow_y),
+                QPoint(arrow_x, arrow_y + arrow_size // 2)
+            ]
+        
+        painter.drawPolygon(points)
+        painter.restore()
 
 
 class ProcessView(QWidget):
@@ -135,8 +245,8 @@ class ProcessView(QWidget):
         self.blink_timer = QTimer(self)
         self.blink_timer.timeout.connect(self._toggle_blink)
         self.blink_timer.start(500)  # Blink every 500ms
-        # Track highlight colors for each item
-        self.item_highlight_colors = {}  # {item: (bg_color, fg_color)}
+        # Store original command line text to prevent accidental edits
+        self.original_command_texts = {}  # {item: original_text}
         self.init_ui()
     
     def init_ui(self):
@@ -180,10 +290,21 @@ class ProcessView(QWidget):
         self.tree.setSortingEnabled(True)
         self.tree.setAlternatingRowColors(False)  # Disable to allow custom backgrounds
         self.tree.setSelectionBehavior(QTreeWidget.SelectRows)
+        self.tree.setTextElideMode(Qt.TextElideMode.ElideNone)  # Allow full text display
         self.tree.resizeColumnToContents(0)
+        
+        # Enable context menu
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
+        
+        # Prevent accidental edits to command column
+        self.tree.itemChanged.connect(self._prevent_command_edit)
         
         # Set custom delegate to paint backgrounds
         self.tree.setItemDelegate(HighlightDelegate(self))
+        
+        # Install event filter to handle arrow clicks
+        self.tree.viewport().installEventFilter(self)
         
         layout.addWidget(self.tree)
     
@@ -204,11 +325,6 @@ class ProcessView(QWidget):
     def update_network_data(self, network_data):
         """Update network data for correlation with processes."""
         self.network_data = network_data
-        # Debug: Check if network data is received
-        import sys
-        if network_data:
-            conn_count = len(network_data.get('connections', [])) if isinstance(network_data, dict) else 0
-            print(f"[ProcessView] Network data received: {conn_count} connections", file=sys.stderr)
         # Refresh the tree if process data is already loaded - defer heavy work
         if self.process_data:
             QTimer.singleShot(0, lambda: self.populate_tree(self.process_data))
@@ -217,22 +333,20 @@ class ProcessView(QWidget):
         """Populate the tree with process data organized by parent-child relationships."""
         # Stop blinking before clearing
         self.blinking_items.clear()
-        self.item_highlight_colors.clear()
+        self.original_command_texts.clear()
         self.blink_state = False
         self.tree.clear()
+        
+        # Invalidate the delegate cache when tree is cleared
+        delegate = self.tree.itemDelegate()
+        if isinstance(delegate, HighlightDelegate):
+            delegate.invalidate_cache()
         
         if not processes:
             return
         
         # Build network status mapping from network data
         network_status_map = self._build_network_status_map()
-        
-        # Debug: Print network status map to see if it's being built correctly
-        if network_status_map:
-            import sys
-            print(f"[ProcessView] Network status map has {len(network_status_map)} entries", file=sys.stderr)
-            for pid, status in list(network_status_map.items())[:5]:  # Print first 5
-                print(f"[ProcessView] PID {pid}: {status}", file=sys.stderr)
         
         # Create a mapping of PID to process
         process_map = {p['pid']: p for p in processes}
@@ -283,62 +397,69 @@ class ProcessView(QWidget):
             
             cmdline = process['cmdline'] if process['cmdline'] else ''
             item.setText(7, cmdline)
+            # Store original command text to prevent accidental edits
+            self.original_command_texts[item] = cmdline
+            # Make command column editable to allow text selection
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             
-            # Apply color coding based on network status and LOLBIN
-            # Priority: ESTABLISHED + LOLBIN (blinking red) > ESTABLISHED (red) > LISTEN (yellow) > LOLBIN (light blue)
+            # Apply color coding based on network status, LOLBIN, and public IP
+            # Priority: Public IP + LOLBIN (blinking red) > Public IP (red) > ESTABLISHED + LOLBIN (blinking red) > 
+            #          ESTABLISHED (red) > LISTEN (yellow) > LOLBIN (light blue)
             process_name_lower = process['name'].lower()
             is_lolbin = process_name_lower in self.LOLBINS
             
             # Get network status for this PID
             pid_status = network_status_map.get(pid) if network_status_map else None
             
-            # Debug: Check if PID matches
-            if pid_status:
-                import sys
-                print(f"[ProcessView] Applying highlight to PID {pid}: status={pid_status}, is_lolbin={is_lolbin}", file=sys.stderr)
-            
             # Apply highlighting based on priority
-            # Store highlight colors in our tracking dict for the delegate to use
+            # Store highlight colors in item data roles (much faster than dictionaries)
             # Using darker backgrounds with white text for better readability
-            if pid_status == 'established' and is_lolbin:
-                # Blinking red for LOLBINs with established connections (highest priority)
+            if pid_status == 'public_ip' and is_lolbin:
+                # Blinking red for LOLBINs with public IP connections (highest priority)
                 self.blinking_items[pid] = item
                 bg_color = QColor(200, 50, 50)  # Darker red for better contrast
                 fg_color = QColor(255, 255, 255)  # White text for readability
-                self.item_highlight_colors[item] = (bg_color, fg_color)
-                # Store highlight type in UserRole data
+                # Store in item data roles (delegate will read from here)
                 item.setData(0, Qt.ItemDataRole.UserRole, "blink-red")
-                # Also set backgrounds directly
-                for col in range(8):
-                    item.setBackground(col, QBrush(bg_color))
-                    item.setForeground(col, QBrush(fg_color))
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)  # Background color
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)  # Foreground color
+            elif pid_status == 'public_ip':
+                # Red for public IP connections
+                bg_color = QColor(220, 100, 100)  # Medium red for better contrast
+                fg_color = QColor(255, 255, 255)  # White text for readability
+                item.setData(0, Qt.ItemDataRole.UserRole, "red")
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)
+            elif pid_status == 'established' and is_lolbin:
+                # Blinking red for LOLBINs with established connections
+                self.blinking_items[pid] = item
+                bg_color = QColor(200, 50, 50)  # Darker red for better contrast
+                fg_color = QColor(255, 255, 255)  # White text for readability
+                # Store in item data roles (delegate will read from here)
+                item.setData(0, Qt.ItemDataRole.UserRole, "blink-red")
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)  # Background color
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)  # Foreground color
             elif pid_status == 'established':
                 # Red for established connections
                 bg_color = QColor(220, 100, 100)  # Medium red for better contrast
                 fg_color = QColor(255, 255, 255)  # White text for readability
-                self.item_highlight_colors[item] = (bg_color, fg_color)
                 item.setData(0, Qt.ItemDataRole.UserRole, "red")
-                for col in range(8):
-                    item.setBackground(col, QBrush(bg_color))
-                    item.setForeground(col, QBrush(fg_color))
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)
             elif pid_status == 'listening':
                 # Yellow for listening processes
                 bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
                 fg_color = QColor(0, 0, 0)  # Black text on yellow background
-                self.item_highlight_colors[item] = (bg_color, fg_color)
                 item.setData(0, Qt.ItemDataRole.UserRole, "yellow")
-                for col in range(8):
-                    item.setBackground(col, QBrush(bg_color))
-                    item.setForeground(col, QBrush(fg_color))
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)
             elif is_lolbin:
                 # Light blue for LOLBINs (when no network status)
                 bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
                 fg_color = QColor(255, 255, 255)  # White text for readability
-                self.item_highlight_colors[item] = (bg_color, fg_color)
                 item.setData(0, Qt.ItemDataRole.UserRole, "blue")
-                for col in range(8):
-                    item.setBackground(col, QBrush(bg_color))
-                    item.setForeground(col, QBrush(fg_color))
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)
             
             # Add child processes
             if pid in children_map:
@@ -365,92 +486,9 @@ class ProcessView(QWidget):
         # Expand all items by default so nothing is hidden
         self.tree.expandAll()
         
-        # Mark delegate cache as dirty so it rebuilds
-        delegate = self.tree.itemDelegate()
-        if isinstance(delegate, HighlightDelegate):
-            delegate._cache_dirty = True
-        
-        # Apply highlighting after tree is populated to ensure colors persist
-        # This ensures the colors aren't overridden by tree widget initialization
-        self._apply_highlighting_after_populate()
-        
         # Resize columns
         for i in range(8):
             self.tree.resizeColumnToContents(i)
-    
-    def _apply_highlighting_after_populate(self):
-        """Re-apply highlighting after tree is populated to ensure colors persist."""
-        if not self.process_data or not self.network_data:
-            return
-        
-        network_status_map = self._build_network_status_map()
-        if not network_status_map:
-            return
-        
-        # Iterate through all items in the tree
-        def apply_colors_to_item(item):
-            """Recursively apply colors to item and its children."""
-            # Get PID from first column
-            try:
-                pid_text = item.text(0)
-                pid = int(pid_text)
-            except (ValueError, TypeError):
-                pid = None
-            
-            if pid and pid in network_status_map:
-                pid_status = network_status_map[pid]
-                # Get process name to check if it's a LOLBIN
-                process_name = item.text(1).lower()
-                is_lolbin = process_name in self.LOLBINS
-                
-                # Apply highlighting based on priority
-                # Store highlight colors in our tracking dict for the delegate to use
-                # Using darker backgrounds with white text for better readability
-                if pid_status == 'established' and is_lolbin:
-                    # Blinking red for LOLBINs with established connections
-                    self.blinking_items[pid] = item
-                    item.setData(0, Qt.ItemDataRole.UserRole, "blink-red")
-                    bg_color = QColor(200, 50, 50)  # Darker red for better contrast
-                    fg_color = QColor(255, 255, 255)  # White text for readability
-                    self.item_highlight_colors[item] = (bg_color, fg_color)
-                    for col in range(8):
-                        item.setBackground(col, QBrush(bg_color))
-                        item.setForeground(col, QBrush(fg_color))
-                elif pid_status == 'established':
-                    # Red for established connections
-                    item.setData(0, Qt.ItemDataRole.UserRole, "red")
-                    bg_color = QColor(220, 100, 100)  # Medium red for better contrast
-                    fg_color = QColor(255, 255, 255)  # White text for readability
-                    self.item_highlight_colors[item] = (bg_color, fg_color)
-                    for col in range(8):
-                        item.setBackground(col, QBrush(bg_color))
-                        item.setForeground(col, QBrush(fg_color))
-                elif pid_status == 'listening':
-                    # Yellow for listening processes
-                    item.setData(0, Qt.ItemDataRole.UserRole, "yellow")
-                    bg_color = QColor(220, 180, 50)  # Darker yellow/orange for better contrast
-                    fg_color = QColor(0, 0, 0)  # Black text on yellow background
-                    self.item_highlight_colors[item] = (bg_color, fg_color)
-                    for col in range(8):
-                        item.setBackground(col, QBrush(bg_color))
-                        item.setForeground(col, QBrush(fg_color))
-                elif is_lolbin:
-                    # Blue for LOLBINs
-                    item.setData(0, Qt.ItemDataRole.UserRole, "blue")
-                    bg_color = QColor(80, 140, 200)  # Darker blue for better contrast
-                    fg_color = QColor(255, 255, 255)  # White text for readability
-                    self.item_highlight_colors[item] = (bg_color, fg_color)
-                    for col in range(8):
-                        item.setBackground(col, QBrush(bg_color))
-                        item.setForeground(col, QBrush(fg_color))
-            
-            # Recursively apply to children
-            for i in range(item.childCount()):
-                apply_colors_to_item(item.child(i))
-        
-        # Apply colors to all top-level items
-        for i in range(self.tree.topLevelItemCount()):
-            apply_colors_to_item(self.tree.topLevelItem(i))
     
     def _toggle_blink(self):
         """Toggle the blinking state for items that should blink."""
@@ -465,16 +503,21 @@ class ProcessView(QWidget):
         else:
             bg_color = QColor(180, 60, 60)  # Darker red
         
-        # Update all blinking items
+        # Update all blinking items - only update item data roles (delegate will handle painting)
         for item in self.blinking_items.values():
             if item:  # Check if item still exists
-                # Update the highlight colors dict
-                if item in self.item_highlight_colors:
-                    old_bg, old_fg = self.item_highlight_colors[item]
-                    self.item_highlight_colors[item] = (bg_color, old_fg)
-                # Also update backgrounds directly
-                for col in range(8):
-                    item.setBackground(col, QBrush(bg_color))
+                # Get foreground color from item data
+                fg_color = item.data(0, Qt.ItemDataRole.UserRole + 2)
+                if not fg_color:
+                    fg_color = QColor(255, 255, 255)  # Default white
+                
+                # Update item data roles (delegate will read from here)
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, bg_color)  # Background color
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, fg_color)  # Foreground color
+        
+        # Trigger single repaint after updating all items (much more efficient)
+        if self.blinking_items:
+            self.tree.viewport().update()
     
     def _is_localhost(self, address):
         """Check if an address is localhost (127.0.0.1 or localhost)."""
@@ -490,8 +533,74 @@ class ProcessView(QWidget):
         # Check if it's localhost
         return ip.lower() in ('127.0.0.1', 'localhost', '::1', '0.0.0.0')
     
+    def _is_public_ip(self, address):
+        """Check if an address is a public IP (not private/localhost)."""
+        if not address or address == 'N/A':
+            return False
+        
+        # Extract IP from "IP:PORT" format
+        if ':' in address:
+            ip = address.split(':')[0].strip()
+        else:
+            ip = address.strip()
+        
+        # Check if it's localhost first
+        if self._is_localhost(address):
+            return False
+        
+        # IPv6 check
+        if ':' in ip:
+            # IPv6 link-local addresses (fe80::/10)
+            if ip.startswith('fe80:') or ip.startswith('fe80::'):
+                return False
+            # IPv6 unique local addresses (fc00::/7) - fc00::/7 and fd00::/8
+            if ip.startswith('fc') or ip.startswith('fd'):
+                return False
+            # IPv6 localhost/loopback
+            if ip == '::1' or ip.lower() == 'localhost' or ip == '0:0:0:0:0:0:0:1':
+                return False
+            # IPv6 unspecified address
+            if ip == '::' or ip == '0:0:0:0:0:0:0:0':
+                return False
+            # If it's a valid IPv6 and not private, it's public
+            return True
+        
+        # IPv4 check
+        try:
+            parts = ip.split('.')
+            if len(parts) != 4:
+                return False
+            
+            # Convert to integers
+            octets = [int(part) for part in parts]
+            
+            # Private IP ranges:
+            # 10.0.0.0/8
+            if octets[0] == 10:
+                return False
+            # 172.16.0.0/12
+            if octets[0] == 172 and 16 <= octets[1] <= 31:
+                return False
+            # 192.168.0.0/16
+            if octets[0] == 192 and octets[1] == 168:
+                return False
+            # 169.254.0.0/16 (link-local)
+            if octets[0] == 169 and octets[1] == 254:
+                return False
+            # 127.0.0.0/8 (localhost)
+            if octets[0] == 127:
+                return False
+            # 0.0.0.0 (unspecified)
+            if all(o == 0 for o in octets):
+                return False
+            
+            # If it's a valid IPv4 and not in private ranges, it's public
+            return True
+        except (ValueError, IndexError):
+            return False
+    
     def _build_network_status_map(self):
-        """Build a mapping of PID to network status (listening or established)."""
+        """Build a mapping of PID to network status (listening, established, or public_ip)."""
         status_map = {}
         
         if not self.network_data:
@@ -527,10 +636,17 @@ class ProcessView(QWidget):
             if status == 'ESTABLISHED' and self._is_localhost(remote_addr):
                 continue
             
-            # If process has an established connection, mark it as established (highest priority)
-            if status == 'ESTABLISHED':
+            # Check if it's a public IP connection
+            is_public_ip = self._is_public_ip(remote_addr)
+            
+            # Priority: public_ip > established > listening
+            # If process has an established connection to public IP, mark it as public_ip (highest priority)
+            if status == 'ESTABLISHED' and is_public_ip:
+                status_map[pid] = 'public_ip'
+            # If process has an established connection and not already marked as public_ip, mark it as established
+            elif status == 'ESTABLISHED' and pid not in status_map:
                 status_map[pid] = 'established'
-            # If process is listening and not already marked as established, mark as listening
+            # If process is listening and not already marked, mark as listening
             elif status == 'LISTEN' and pid not in status_map:
                 status_map[pid] = 'listening'
         
@@ -672,3 +788,123 @@ class ProcessView(QWidget):
         
         legend_layout.addStretch()
         return legend_frame
+    
+    def _prevent_command_edit(self, item, column):
+        """Prevent accidental edits to the command column by reverting changes."""
+        if column == 7:  # Command column
+            if item in self.original_command_texts:
+                original_text = self.original_command_texts[item]
+                # Block signals to prevent infinite loop
+                self.tree.blockSignals(True)
+                item.setText(7, original_text)
+                self.tree.blockSignals(False)
+    
+    def _show_context_menu(self, position):
+        """Show context menu on right-click."""
+        item = self.tree.itemAt(position)
+        if not item:
+            return
+        
+        # Get the column where the click occurred
+        column = self.tree.columnAt(position.x())
+        
+        # Only show decode option for command column (column 7)
+        if column != 7:
+            return
+        
+        # Get text from the command column
+        cell_text = item.text(7)
+        if not cell_text:
+            return
+        
+        # Try to get selected text from clipboard first (user might have copied selected text)
+        # Otherwise, use the full cell text
+        clipboard = QApplication.clipboard()
+        clipboard_text = clipboard.text()
+        
+        # Use clipboard text if it's a subset of the cell text, otherwise use cell text
+        if clipboard_text and clipboard_text in cell_text:
+            text_to_decode = clipboard_text
+        else:
+            text_to_decode = cell_text
+        
+        # Create context menu
+        menu = QMenu(self)
+        
+        # Add decode base64 action
+        decode_action = QAction("Decode base64", self)
+        decode_action.triggered.connect(lambda: self._decode_base64(text_to_decode))
+        menu.addAction(decode_action)
+        
+        # Show menu at cursor position
+        menu.exec(self.tree.mapToGlobal(position))
+    
+    def _decode_base64(self, text):
+        """Decode base64 text and show in dialog."""
+        try:
+            # Try to decode the selected text
+            decoded_bytes = base64.b64decode(text, validate=True)
+            # Try to decode as UTF-8 first
+            try:
+                decoded_text = decoded_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                # If UTF-8 fails, try latin-1
+                try:
+                    decoded_text = decoded_bytes.decode('latin-1')
+                except UnicodeDecodeError:
+                    # If both fail, show as hex
+                    decoded_text = decoded_bytes.hex()
+        except Exception as e:
+            # If decoding fails, show error message
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Decode Error",
+                f"Failed to decode base64:\n{str(e)}"
+            )
+            return
+        
+        # Show decoded text in dialog
+        dialog = Base64DecodeDialog(decoded_text, self)
+        dialog.exec()
+    
+    def eventFilter(self, obj, event):
+        """Handle mouse clicks on arrow indicators to expand/collapse items."""
+        if obj == self.tree.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.LeftButton:
+                # Get the item at the click position
+                item = self.tree.itemAt(event.pos())
+                if item and item.childCount() > 0:
+                    # Calculate arrow area - arrows are drawn in the branch area (left of items)
+                    arrow_size = 6
+                    indent = self.tree.indentation()
+                    
+                    # Get the visual rect for the item
+                    visual_rect = self.tree.visualItemRect(item)
+                    
+                    # Calculate the depth of this item
+                    depth = 0
+                    parent = item.parent()
+                    while parent:
+                        depth += 1
+                        parent = parent.parent()
+                    
+                    # Calculate the branch area (left of the item)
+                    # The branch area starts at the left edge minus the indentation
+                    branch_area_left = visual_rect.left() - indent * (depth + 1)
+                    branch_area_right = visual_rect.left()
+                    
+                    # Arrow is drawn at the left edge of the item (with small offset)
+                    arrow_area_left = visual_rect.left() + 2
+                    arrow_area_right = arrow_area_left + arrow_size + 4  # Add padding for easier clicking
+                    
+                    # Check if click is in the arrow area or branch area
+                    click_x = event.pos().x()
+                    if (branch_area_left <= click_x <= branch_area_right) or \
+                       (arrow_area_left <= click_x <= arrow_area_right):
+                        # Toggle expand/collapse
+                        item.setExpanded(not item.isExpanded())
+                        return True  # Event handled
+        
+        # Let the default event handling proceed
+        return super().eventFilter(obj, event)

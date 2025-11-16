@@ -13,6 +13,11 @@ class AppCollector(BaseCollector):
     
     def collect(self):
         """Collect installed application information."""
+        import sys
+        print(f"[AppCollector] collect() method called!", file=sys.stderr)
+        if sys.stderr is not None:
+            sys.stderr.flush()
+        
         applications = []
         
         # Registry paths for installed applications
@@ -25,18 +30,35 @@ class AppCollector(BaseCollector):
         # Track seen applications to avoid duplicates
         seen_apps = set()
         
+        print(f"[AppCollector] Starting registry collection...", file=sys.stderr)
+        if sys.stderr is not None:
+            sys.stderr.flush()
+        
         for hkey, path in registry_paths:
             try:
                 applications.extend(self._get_apps_from_registry(hkey, path, seen_apps))
             except Exception as e:
                 # Continue with other registry paths if one fails
+                print(f"[AppCollector] Error reading registry path {path}: {e}", file=sys.stderr)
+                if sys.stderr is not None:
+                    sys.stderr.flush()
                 continue
         
-        return {
+        print(f"[AppCollector] Registry collection complete. Found {len(applications)} applications", file=sys.stderr)
+        if sys.stderr is not None:
+            sys.stderr.flush()
+        
+        result = {
             'timestamp': datetime.now().isoformat(),
             'applications': applications,
             'total_count': len(applications)
         }
+        
+        print(f"[AppCollector] collect() method returning. Applications: {len(applications)}", file=sys.stderr)
+        if sys.stderr is not None:
+            sys.stderr.flush()
+        
+        return result
     
     def _get_apps_from_registry(self, hkey, path, seen_apps):
         """Get applications from a specific registry path."""

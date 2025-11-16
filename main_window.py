@@ -30,6 +30,8 @@ from ui.login_view import LoginView
 from ui.app_view import AppView
 from ui.firewall_view import FirewallView
 from ui.hayabusa_view import HayabusaView
+from ui.summary_view import SummaryView
+from ui.notification_widget import NotificationWidget
 
 
 class CollectionThread(QThread):
@@ -58,6 +60,13 @@ class CollectionThread(QThread):
                 def binary_incremental_callback(binary_info):
                     self.incremental_update.emit(binary_info, self.collector_name)
                 self.collector.incremental_callback = binary_incremental_callback
+            
+            # For files collector, set up incremental callback
+            elif self.collector_name == "files" and hasattr(self.collector, 'incremental_callback'):
+                # Create a callback that emits incremental updates
+                def file_incremental_callback(file_info):
+                    self.incremental_update.emit(file_info, self.collector_name)
+                self.collector.incremental_callback = file_incremental_callback
             
             import sys
             print(f"[CollectionThread] {self.collector_name} thread starting collection...", file=sys.stderr)
@@ -90,6 +99,8 @@ class CollectionThread(QThread):
             import traceback
             error_details = f"{str(e)}\n{traceback.format_exc()}"
             self.error.emit(error_details, self.collector_name)
+
+
 
 
 class MainWindow(QMainWindow):
@@ -166,16 +177,24 @@ class MainWindow(QMainWindow):
         # Track which tabs are still processing
         self.processing_tabs = set()
         
-        # Batching for incremental updates (DLL and binary)
+        # Batching for incremental updates (DLL, binary, and files)
         self.dll_update_queue = []
         self.binary_update_queue = []
+        self.file_update_queue = []
         self.dll_batch_timer = QTimer()
         self.dll_batch_timer.setSingleShot(True)
         self.dll_batch_timer.timeout.connect(self._process_dll_batch)
         self.binary_batch_timer = QTimer()
         self.binary_batch_timer.setSingleShot(True)
         self.binary_batch_timer.timeout.connect(self._process_binary_batch)
+        self.file_batch_timer = QTimer()
+        self.file_batch_timer.setSingleShot(True)
+        self.file_batch_timer.timeout.connect(self._process_file_batch)
         self.batch_delay_ms = 100  # Batch updates every 100ms for better performance
+        
+        
+        # Notification widget
+        self.notification_widget = None
         
         self.init_ui()
     
@@ -276,6 +295,7 @@ class MainWindow(QMainWindow):
         self.app_view = AppView()
         self.firewall_view = FirewallView()
         self.hayabusa_view = HayabusaView()
+        self.summary_view = SummaryView()
         
         # Add tabs
         self.tabs.addTab(self.process_view, "Processes")
@@ -289,6 +309,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.app_view, "Applications")
         self.tabs.addTab(self.firewall_view, "Firewall")
         self.tabs.addTab(self.hayabusa_view, "Hayabusa")
+        self.tabs.addTab(self.summary_view, "Summary")
         
         # Connect tab change signal to defer heavy work
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -314,6 +335,17 @@ class MainWindow(QMainWindow):
         self.statusBar.addPermanentWidget(self.progress_bar)
         
         self.statusBar.showMessage("Ready")
+        
+        # Create notification widget
+        self.notification_widget = NotificationWidget(self)
+        
+        # Set up notification callbacks for views that support batching
+        self.dll_view.notification_callback = self.show_notification
+        self.app_view.notification_callback = self.show_notification
+        self.network_view.notification_callback = self.show_notification
+        self.service_view.notification_callback = self.show_notification
+        self.file_view.notification_callback = self.show_notification
+        self.firewall_view.notification_callback = self.show_notification
     
     def on_tab_changed(self, index):
         """Handle tab change - defer heavy work to make switching instant."""
@@ -335,7 +367,8 @@ class MainWindow(QMainWindow):
             self.login_view,
             self.app_view,
             self.firewall_view,
-            self.hayabusa_view
+            self.hayabusa_view,
+            self.summary_view
         ]
         
         if 0 <= tab_index < len(views):
@@ -346,62 +379,90 @@ class MainWindow(QMainWindow):
     
     def _update_view_data(self, collector_name, data):
         """Update view data - deferred to avoid blocking UI."""
-        if collector_name == "processes":
-            self.process_view.update_data(data)
-            # If network data is already collected, pass it for correlation
-            if "network" in self.collected_data:
-                self.process_view.update_network_data(self.collected_data["network"])
-            # Also pass process data to network view for create_time correlation
-            if "network" in self.collected_data:
-                self.network_view.update_process_data(data)
-        elif collector_name == "services":
-            self.service_view.update_data(data)
-        elif collector_name == "files":
-            self.file_view.update_data(data)
-        elif collector_name == "system":
-            self.system_view.update_data(data)
-        elif collector_name == "persistence":
-            self.persistence_view.update_data(data)
-        elif collector_name == "dlls":
-            # Mark as full update to replace any incremental data
-            data['is_full_update'] = True
-            self.dll_view.update_data(data)
-        elif collector_name == "logins":
-            import sys
-            print(f"[MainWindow] Login collection finished: received data type={type(data)}", file=sys.stderr)
-            if isinstance(data, dict):
-                print(f"[MainWindow] Login data: logins={len(data.get('logins', []))}, users={len(data.get('users', []))}, has_error={'error' in data}", file=sys.stderr)
-                if 'error' in data:
-                    print(f"[MainWindow] Login collection error: {data.get('error')}", file=sys.stderr)
-            # Ensure login data has proper structure
-            if not isinstance(data, dict):
-                data = {'logins': [], 'users': []}
-            else:
-                if 'logins' not in data:
-                    data['logins'] = []
-                if 'users' not in data:
-                    data['users'] = []
-            print(f"[MainWindow] Updating login view with {len(data.get('logins', []))} logins", file=sys.stderr)
-            self.login_view.update_data(data)
-        elif collector_name == "applications":
-            self.app_view.update_data(data)
-        elif collector_name == "binaries":
-            self.app_view.update_binary_data(data)
-        elif collector_name == "firewall":
-            self.firewall_view.update_data(data)
-            # If network data is already collected, pass it for correlation
-            if "network" in self.collected_data:
-                self.firewall_view.update_network_data(self.collected_data["network"])
-        elif collector_name == "network":
-            self.network_view.update_data(data)
-            # If firewall data is already collected, pass network data to firewall view
-            if "firewall" in self.collected_data:
-                self.firewall_view.update_network_data(data)
-            # If process data is already collected, update process view with network data
-            if "processes" in self.collected_data:
-                self.process_view.update_network_data(data)
+        # Capture variables in closure to avoid UnboundLocalError
+        # Create a working copy of data to avoid reassignment issues
+        view_data = data.copy() if isinstance(data, dict) else data
+        
+        # Use QTimer.singleShot to defer work and yield to event loop
+        # This ensures UI remains responsive even during heavy updates
+        def update():
+            if collector_name == "processes":
+                self.process_view.update_data(view_data)
+                # If network data is already collected, pass it for correlation
+                if "network" in self.collected_data:
+                    self.process_view.update_network_data(self.collected_data["network"])
                 # Also pass process data to network view for create_time correlation
-                self.network_view.update_process_data(self.collected_data["processes"])
+                if "network" in self.collected_data:
+                    self.network_view.update_process_data(view_data)
+                # If application data is already collected, pass process data for correlation
+                if "applications" in self.collected_data:
+                    self.app_view.update_process_data(view_data)
+            elif collector_name == "services":
+                self.service_view.update_data(view_data)
+            elif collector_name == "files":
+                # Mark as full update to replace any incremental data
+                if isinstance(view_data, dict):
+                    view_data['is_full_update'] = True
+                self.file_view.update_data(view_data)
+            elif collector_name == "system":
+                self.system_view.update_data(view_data)
+            elif collector_name == "persistence":
+                self.persistence_view.update_data(view_data)
+                # If application data is already collected, pass persistence data for correlation
+                if "applications" in self.collected_data:
+                    self.app_view.update_persistence_data(view_data)
+            elif collector_name == "dlls":
+                # Mark as full update to replace any incremental data
+                if isinstance(view_data, dict):
+                    view_data['is_full_update'] = True
+                self.dll_view.update_data(view_data)
+            elif collector_name == "logins":
+                import sys
+                print(f"[MainWindow] Login collection finished: received data type={type(view_data)}", file=sys.stderr)
+                # Ensure login data has proper structure
+                login_data = view_data
+                if not isinstance(login_data, dict):
+                    login_data = {'logins': [], 'users': []}
+                else:
+                    login_data = login_data.copy()  # Work with a copy
+                    if 'logins' not in login_data:
+                        login_data['logins'] = []
+                    if 'users' not in login_data:
+                        login_data['users'] = []
+                if isinstance(login_data, dict):
+                    print(f"[MainWindow] Login data: logins={len(login_data.get('logins', []))}, users={len(login_data.get('users', []))}, has_error={'error' in login_data}", file=sys.stderr)
+                    if 'error' in login_data:
+                        print(f"[MainWindow] Login collection error: {login_data.get('error')}", file=sys.stderr)
+                print(f"[MainWindow] Updating login view with {len(login_data.get('logins', []))} logins", file=sys.stderr)
+                self.login_view.update_data(login_data)
+            elif collector_name == "applications":
+                self.app_view.update_data(view_data)
+                # If process data is already collected, pass it for correlation
+                if "processes" in self.collected_data:
+                    self.app_view.update_process_data(self.collected_data["processes"])
+                # If persistence data is already collected, pass it for correlation
+                if "persistence" in self.collected_data:
+                    self.app_view.update_persistence_data(self.collected_data["persistence"])
+            elif collector_name == "binaries":
+                self.app_view.update_binary_data(view_data)
+            elif collector_name == "firewall":
+                self.firewall_view.update_data(view_data)
+                # If network data is already collected, pass it for correlation
+                if "network" in self.collected_data:
+                    self.firewall_view.update_network_data(self.collected_data["network"])
+            elif collector_name == "network":
+                self.network_view.update_data(view_data)
+                # If firewall data is already collected, pass network data to firewall view
+                if "firewall" in self.collected_data:
+                    self.firewall_view.update_network_data(view_data)
+                # If process data is already collected, update process view with network data
+                if "processes" in self.collected_data:
+                    self.process_view.update_network_data(view_data)
+                    # Also pass process data to network view for create_time correlation
+                    self.network_view.update_process_data(self.collected_data["processes"])
+        
+        # Defer the update to yield to event loop - use a small delay to ensure UI responsiveness
+        QTimer.singleShot(1, update)
     
     def create_green_icon(self):
         """Create a small green circle icon for tab headers."""
@@ -483,11 +544,16 @@ class MainWindow(QMainWindow):
         # Clear binary table before starting new collection (for incremental updates)
         self.app_view.clear_binary_data()
         
+        # Clear file view before starting new collection (for incremental updates)
+        self.file_view.clear_data()
+        
         # Clear and stop batch timers
         self.dll_update_queue.clear()
         self.binary_update_queue.clear()
+        self.file_update_queue.clear()
         self.dll_batch_timer.stop()
         self.binary_batch_timer.stop()
+        self.file_batch_timer.stop()
         
         # Clear previous thread references
         self.collection_threads.clear()
@@ -508,6 +574,9 @@ class MainWindow(QMainWindow):
             # Connect incremental updates for binaries collector
             elif name == "binaries":
                 thread.incremental_update.connect(self.on_binary_incremental_update)
+            # Connect incremental updates for files collector
+            elif name == "files":
+                thread.incremental_update.connect(self.on_file_incremental_update)
             self.collection_threads[name] = thread
             thread.start()  # All threads start immediately and run in parallel
     
@@ -523,6 +592,9 @@ class MainWindow(QMainWindow):
         
         # Store collected data
         self.collected_data[collector_name] = data
+        
+        # Update summary view with this collector's data
+        self.summary_view.update_data(collector_name, data)
         
         # Defer all view updates to make UI instantly responsive
         # Use QTimer.singleShot to defer work after current event processing
@@ -557,6 +629,8 @@ class MainWindow(QMainWindow):
                 self._process_dll_batch()
             if self.binary_update_queue:
                 self._process_binary_batch()
+            if self.file_update_queue:
+                self._process_file_batch()
             
             self.progress_bar.setVisible(False)
             self.collect_all_btn.setEnabled(True)
@@ -572,52 +646,81 @@ class MainWindow(QMainWindow):
         # Queue the update instead of applying immediately
         if collector_name == "dlls":
             self.dll_update_queue.append(dll_info)
-            # Start/restart batch timer if not already running
-            if not self.dll_batch_timer.isActive():
-                self.dll_batch_timer.start(self.batch_delay_ms)
+            # Only process when we have 50 records
+            if len(self.dll_update_queue) >= 150:
+                self._process_dll_batch()
     
     def _process_dll_batch(self):
-        """Process batched DLL updates for better performance."""
+        """Process batched DLL updates for better performance (only when 50 records are ready)."""
         if not self.dll_update_queue:
             return
         
-        # Get all queued updates
-        batch = self.dll_update_queue[:]
-        self.dll_update_queue.clear()
+        # Process up to 50 records at a time
+        batch_size = 150
+        batch = self.dll_update_queue[:batch_size]
+        self.dll_update_queue = self.dll_update_queue[batch_size:]
         
         # Apply all updates at once (view handles batching internally)
         for dll_info in batch:
             self.dll_view.add_dll_incremental(dll_info)
         
-        # If there are more queued updates, schedule another batch
-        if self.dll_update_queue:
-            self.dll_batch_timer.start(self.batch_delay_ms)
+        # If there are more queued updates (50 or more), process another batch
+        if len(self.dll_update_queue) >= 50:
+            self._process_dll_batch()
     
     def on_binary_incremental_update(self, binary_info, collector_name):
         """Handle incremental binary updates (called from worker thread) - batched for performance."""
         # Queue the update instead of applying immediately
         if collector_name == "binaries":
             self.binary_update_queue.append(binary_info)
-            # Start/restart batch timer if not already running
-            if not self.binary_batch_timer.isActive():
-                self.binary_batch_timer.start(self.batch_delay_ms)
+            # Only process when we have 50 records
+            if len(self.binary_update_queue) >= 150:
+                self._process_binary_batch()
+    
+    def on_file_incremental_update(self, file_info, collector_name):
+        """Handle incremental file updates (called from worker thread) - batched for performance."""
+        # Queue the update instead of applying immediately
+        if collector_name == "files":
+            self.file_update_queue.append(file_info)
+            # Only process when we have 150 records
+            if len(self.file_update_queue) >= 150:
+                self._process_file_batch()
     
     def _process_binary_batch(self):
-        """Process batched binary updates for better performance."""
+        """Process batched binary updates for better performance (only when 50 records are ready)."""
         if not self.binary_update_queue:
             return
         
-        # Get all queued updates
-        batch = self.binary_update_queue[:]
-        self.binary_update_queue.clear()
+        # Process up to 50 records at a time
+        batch_size = 150
+        batch = self.binary_update_queue[:batch_size]
+        self.binary_update_queue = self.binary_update_queue[batch_size:]
         
         # Apply all updates at once (view handles batching internally)
         for binary_info in batch:
             self.app_view.add_binary_incremental(binary_info)
         
-        # If there are more queued updates, schedule another batch
-        if self.binary_update_queue:
-            self.binary_batch_timer.start(self.batch_delay_ms)
+        # If there are more queued updates (50 or more), process another batch
+        if len(self.binary_update_queue) >= 50:
+            self._process_binary_batch()
+    
+    def _process_file_batch(self):
+        """Process batched file updates for better performance (only when 150 records are ready)."""
+        if not self.file_update_queue:
+            return
+        
+        # Process up to 150 records at a time
+        batch_size = 150
+        batch = self.file_update_queue[:batch_size]
+        self.file_update_queue = self.file_update_queue[batch_size:]
+        
+        # Apply all updates at once (view handles batching internally)
+        for file_info in batch:
+            self.file_view.add_file_incremental(file_info)
+        
+        # If there are more queued updates (150 or more), process another batch
+        if len(self.file_update_queue) >= 150:
+            self._process_file_batch()
     
     def on_collection_error(self, error_message, collector_name):
         """Handle collection errors (called from worker thread)."""
@@ -637,13 +740,20 @@ class MainWindow(QMainWindow):
         
         # For login collector, update view with empty data structure
         if collector_name == "logins":
-            error_data = {
+            login_error_data = {
                 'timestamp': None,
                 'error': error_message,
                 'logins': [],
                 'users': []
             }
-            self.login_view.update_data(error_data)
+            self.login_view.update_data(login_error_data)
+        
+        # Update summary view with error data
+        summary_error_data = {
+            'error': error_message,
+            'timestamp': None
+        }
+        self.summary_view.update_data(collector_name, summary_error_data)
         
         # Mark this collector as finished (even if there was an error)
         self.finished_collectors.add(collector_name)
@@ -668,11 +778,45 @@ class MainWindow(QMainWindow):
             all_done = (self.completed_count >= self.total_collectors)
         
         if all_done:
-            # Process any remaining batched updates before finishing
-            if self.dll_update_queue:
-                self._process_dll_batch()
-            if self.binary_update_queue:
-                self._process_binary_batch()
+            # Process any remaining batched updates before finishing (flush all remaining)
+            # Process remaining DLL updates
+            while self.dll_update_queue:
+                batch = self.dll_update_queue[:150]
+                self.dll_update_queue = self.dll_update_queue[50:]
+                for dll_info in batch:
+                    self.dll_view.add_dll_incremental(dll_info)
+                # If less than 50 remain, flush them
+                if len(self.dll_update_queue) < 150 and self.dll_update_queue:
+                    for dll_info in self.dll_update_queue:
+                        self.dll_view.add_dll_incremental(dll_info)
+                    self.dll_update_queue.clear()
+                    break
+            
+            # Process remaining binary updates
+            while self.binary_update_queue:
+                batch = self.binary_update_queue[:150]
+                self.binary_update_queue = self.binary_update_queue[50:]
+                for binary_info in batch:
+                    self.app_view.add_binary_incremental(binary_info)
+                # If less than 50 remain, flush them
+                if len(self.binary_update_queue) < 150 and self.binary_update_queue:
+                    for binary_info in self.binary_update_queue:
+                        self.app_view.add_binary_incremental(binary_info)
+                    self.binary_update_queue.clear()
+                    break
+            
+            # Process remaining file updates
+            while self.file_update_queue:
+                batch = self.file_update_queue[:150]
+                self.file_update_queue = self.file_update_queue[150:]
+                for file_info in batch:
+                    self.file_view.add_file_incremental(file_info)
+                # If less than 150 remain, flush them
+                if len(self.file_update_queue) < 150 and self.file_update_queue:
+                    for file_info in self.file_update_queue:
+                        self.file_view.add_file_incremental(file_info)
+                    self.file_update_queue.clear()
+                    break
             
             self.progress_bar.setVisible(False)
             self.collect_all_btn.setEnabled(True)
@@ -682,4 +826,9 @@ class MainWindow(QMainWindow):
             self.processing_tabs.clear()
             # Clean up finished threads (optional - can be done later)
             self._cleanup_finished_threads()
+    
+    def show_notification(self, message):
+        """Show a notification message."""
+        if self.notification_widget:
+            self.notification_widget.show_notification(message, duration_ms=2000)
 

@@ -23,6 +23,8 @@ class DLLCollector(BaseCollector):
         super().__init__()
         self.seen_dlls = {}  # Cache for DLL signature verification
         self.common_paths = self._get_common_paths()
+        self.suspicious_paths = self._get_suspicious_paths()
+        self.system_processes = self._get_system_processes()
         self.incremental_callback = incremental_callback
     
     def _get_common_paths(self):
@@ -54,6 +56,132 @@ class DLLCollector(BaseCollector):
         ])
         
         return common
+    
+    def _get_suspicious_paths(self):
+        """
+        Get list of suspicious paths that are commonly used for DLL injection.
+        
+        Returns:
+            list: List of suspicious path prefixes (lowercase)
+        """
+        suspicious = []
+        
+        # Temp directories
+        temp_dirs = [
+            os.environ.get('TEMP', ''),
+            os.environ.get('TMP', ''),
+            os.environ.get('LOCALAPPDATA', ''),
+        ]
+        for temp_dir in temp_dirs:
+            if temp_dir:
+                suspicious.append(os.path.normpath(temp_dir.lower()))
+        
+        # User profile AppData directories (often used for malware)
+        appdata_local = os.environ.get('LOCALAPPDATA', '')
+        appdata_roaming = os.environ.get('APPDATA', '')
+        if appdata_local:
+            suspicious.append(os.path.normpath(appdata_local.lower()))
+        if appdata_roaming:
+            suspicious.append(os.path.normpath(appdata_roaming.lower()))
+        
+        # Common malware locations
+        user_profile = os.environ.get('USERPROFILE', '')
+        if user_profile:
+            # Check for DLLs directly in user profile (suspicious)
+            suspicious.append(os.path.normpath(user_profile.lower()))
+        
+        return [p for p in suspicious if p]  # Filter out empty strings
+    
+    def _get_system_processes(self):
+        """
+        Get list of system process names that should only load DLLs from system paths.
+        
+        Returns:
+            set: Set of system process names (lowercase)
+        """
+        return {
+            'csrss.exe', 'winlogon.exe', 'services.exe', 'lsass.exe',
+            'smss.exe', 'svchost.exe', 'spoolsv.exe', 'explorer.exe',
+            'dwm.exe', 'wininit.exe', 'audiodg.exe', 'dllhost.exe',
+            'taskhost.exe', 'taskhostw.exe', 'conhost.exe', 'sihost.exe',
+            'runtimebroker.exe', 'searchindexer.exe', 'searchprotocolhost.exe',
+            'searchfilterhost.exe', 'wmiprvse.exe', 'unsecapp.exe'
+        }
+    
+    def _is_suspicious_path(self, dll_path):
+        """
+        Check if a DLL path is in a suspicious location commonly used for injection.
+        
+        Args:
+            dll_path: Path to the DLL file
+            
+        Returns:
+            bool: True if path is suspicious, False otherwise
+        """
+        dll_path_lower = os.path.normpath(dll_path.lower())
+        
+        for suspicious_path in self.suspicious_paths:
+            if dll_path_lower.startswith(suspicious_path):
+                return True
+        
+        return False
+    
+    def _is_system_process(self, process_name):
+        """
+        Check if a process is a system process.
+        
+        Args:
+            process_name: Name of the process
+            
+        Returns:
+            bool: True if process is a system process, False otherwise
+        """
+        return process_name.lower() in self.system_processes
+    
+    def _detect_injection(self, dll_info):
+        """
+        Detect if a DLL is likely injected based on various indicators.
+        
+        Args:
+            dll_info: Dictionary containing DLL information
+            
+        Returns:
+            tuple: (is_injected: bool, injection_reason: str)
+        """
+        dll_path = dll_info['dll_path']
+        process_name = dll_info['process_name']
+        is_trusted = dll_info['is_trusted']
+        is_common_path = dll_info['is_common_path']
+        dll_path_lower = os.path.normpath(dll_path.lower())
+        
+        reasons = []
+        
+        # Indicator 1: DLL from suspicious path (temp, AppData, etc.)
+        if self._is_suspicious_path(dll_path):
+            reasons.append("Suspicious Path")
+        
+        # Indicator 2: Unsigned DLL loaded into system process from non-system location
+        if self._is_system_process(process_name) and not is_common_path and not is_trusted:
+            reasons.append("Unsigned DLL in System Process")
+        
+        # Indicator 3: DLL from user profile loaded into system process
+        if self._is_system_process(process_name) and not is_common_path:
+            user_profile = os.environ.get('USERPROFILE', '').lower()
+            if user_profile and dll_path_lower.startswith(user_profile):
+                reasons.append("User DLL in System Process")
+        
+        # Indicator 4: Unsigned DLL from uncommon path
+        if not is_trusted and not is_common_path:
+            reasons.append("Unsigned Uncommon Path")
+        
+        # Indicator 5: DLL file doesn't exist on disk (memory-only injection)
+        if not dll_info.get('exists', True):
+            reasons.append("Memory-Only DLL")
+        
+        if reasons:
+            return (True, " | ".join(reasons))
+        
+        return (False, "Normal")
     
     def _is_common_path(self, dll_path):
         """
@@ -124,7 +252,8 @@ class DLLCollector(BaseCollector):
                 capture_output=True,
                 text=True,
                 timeout=10,
-                shell=False
+                shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
             )
             
             # Check stderr for errors
@@ -224,7 +353,8 @@ class DLLCollector(BaseCollector):
                     
                     # Get file creation time
                     creation_time = None
-                    if os.path.exists(dll_path):
+                    dll_exists = os.path.exists(dll_path)
+                    if dll_exists:
                         try:
                             stat_info = os.stat(dll_path)
                             creation_time = datetime.fromtimestamp(stat_info.st_ctime).isoformat()
@@ -241,10 +371,15 @@ class DLLCollector(BaseCollector):
                         'is_trusted': is_trusted,
                         'signature_status': status,
                         'signer': signer,
-                        'exists': os.path.exists(dll_path),
+                        'exists': dll_exists,
                         'is_common_path': is_common_path,
                         'creation_time': creation_time
                     }
+                    
+                    # Detect DLL injection
+                    is_injected, injection_reason = self._detect_injection(dll_info)
+                    dll_info['is_injected'] = is_injected
+                    dll_info['injection_reason'] = injection_reason
                     
                     dll_data.append(dll_info)
                     
@@ -262,12 +397,14 @@ class DLLCollector(BaseCollector):
         # Count statistics (signature checking is cached, so this is efficient)
         trusted_count = sum(1 for d in dll_data if d['is_trusted'])
         untrusted_count = len(dll_data) - trusted_count
+        injected_count = sum(1 for d in dll_data if d.get('is_injected', False))
         
         return {
             'timestamp': datetime.now().isoformat(),
             'dlls': dll_data,
             'total_count': len(dll_data),
             'trusted_count': trusted_count,
-            'untrusted_count': untrusted_count
+            'untrusted_count': untrusted_count,
+            'injected_count': injected_count
         }
 
